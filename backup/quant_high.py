@@ -1,6 +1,13 @@
+# from datetime import time
+import time
 import sys
 from PyQt5.QtWidgets import *
 import win32com.client
+
+sys.path.append("C:/Users/etlers/Documents/project/python/common")
+
+import date_util as DU
+import conn_db as DB
  
 # 설명: 당일 상승률 상위 200 종목을 가져와 현재가  실시간 조회하는 샘플
 # CpEvent: 실시간 현재가 수신 클래스
@@ -125,17 +132,49 @@ class CpMarketEye:
             return False
  
         cnt  = objRq.GetHeaderValue(2)
- 
+
+        list_whole = []
         for i in range(cnt):
-            rpCode = objRq.GetDataValue(0, i)  # 코드
-            rpName = objRq.GetDataValue(1, i)  # 종목명
-            rpTime= objRq.GetDataValue(2, i)  # 시간
-            rpDiffFlag = objRq.GetDataValue(3, i)  # 대비부호
-            rpDiff = objRq.GetDataValue(4, i)  # 대비
-            rpCur = objRq.GetDataValue(5, i)  # 현재가
-            rpVol = objRq.GetDataValue(6, i)  # 거래량
-            print(rpCode, rpName, rpTime,  rpDiffFlag, rpDiff, rpCur, rpVol)
- 
+            list_jongmok = []
+            # rpCode = objRq.GetDataValue(0, i)  # 코드
+            # rpName = objRq.GetDataValue(1, i)  # 종목명
+            # rpTime= objRq.GetDataValue(2, i)  # 시간
+            # rpDiffFlag = objRq.GetDataValue(3, i)  # 대비부호
+            # rpDiff = objRq.GetDataValue(4, i)  # 대비
+            # rpCur = objRq.GetDataValue(5, i)  # 현재가
+            # rpVol = objRq.GetDataValue(6, i)  # 거래량
+            # 종목, 시간, 부호, 대비, 현재가, 거래량, 종목명
+            # print(
+            #     objRq.GetDataValue(0, i),
+            #     objRq.GetDataValue(1, i),
+            #     objRq.GetDataValue(2, i),
+            #     objRq.GetDataValue(3, i),
+            #     objRq.GetDataValue(4, i),
+            #     objRq.GetDataValue(5, i),
+            #     objRq.GetDataValue(6, i)
+            # )
+            list_jongmok.append(objRq.GetDataValue(0, i))
+            list_jongmok.append(objRq.GetDataValue(1, i))
+            list_jongmok.append(objRq.GetDataValue(2, i))
+            list_jongmok.append(objRq.GetDataValue(3, i))
+            list_jongmok.append(objRq.GetDataValue(4, i))
+            list_jongmok.append(objRq.GetDataValue(5, i))
+            list_jongmok.append(objRq.GetDataValue(6, i))
+            list_whole.append(list_jongmok)
+
+        # 데이터 디비로 저장
+        header = """
+            INSERT INTO creon_quant
+            ( JONGMOK_CD, TM, VS_SIGN, VS_PRC, PRC, VOL, JONGMOK_NM, HM )
+            VALUES"""
+        body = ""
+        now_tm = DU.get_now_datetime_string().split(" ")[1].replace(":","")
+        for list_val in list_whole:
+            body += f"('{list_val[0]}','{now_tm.zfill(6)}',{list_val[2]},{list_val[3]},{list_val[4]},{list_val[5]},'{list_val[6]}','{list_val[1]}'),"
+
+        qry = header + "\n" + body[:len(body)-1]
+        DB.transaction_data(qry)
+        
         return True
  
  
@@ -183,17 +222,22 @@ class MyWindow(QMainWindow):
         # 요청 필드 배열 - 종목코드, 시간, 대비부호 대비, 현재가, 거래량, 종목명
         rqField = [0, 1, 2, 3, 4, 10, 17]  #요청 필드
         objMarkeyeye = CpMarketEye()
+
         if (objMarkeyeye.Request(codes, rqField) == False):
             exit()
- 
+
         cnt = len(codes)
         for i in range(cnt):
             self.objCur.append(CpStockCur())
             self.objCur[i].Subscribe(codes[i])
- 
+
         print("빼기빼기================-")
         print(cnt , "종목 실시간 현재가 요청 시작")
         self.isSB = True
+
+        now_tm = DU.get_now_datetime_string().split(" ")[1].replace(":","")
+        if now_tm > "215500":
+            exit()
  
     def btnStop_clicked(self):
         self.StopSubscribe()
