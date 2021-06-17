@@ -3,14 +3,17 @@ url_param:
   kosdak_url: "https://finance.naver.com/sise/sise_quant_high.nhn?sosok=1"
 
 query_param:
-  from_rt: 10
-  to_rt: 5000
+  from_up_vol_rt: 10.0
+  to_up_vol_rt: 5000.0
   from_price: 5000
   to_price: 25000
+  from_up_prc_rt: 1.0
+  to_up_prc_rt: 3.0
+  vol: 1000000
 
 hms_param:
   start_hms: "090010"
-  end_hms: "153000"
+  end_hms: "093000"
   until_hms: "100000"
   clear_hms: "103000"
 

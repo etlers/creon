@@ -510,4 +510,4 @@ if __name__ == "__main__":
 
         deal = testMain()
         deal.Reqeust5339()    
-        time.sleep(10)
+        time.sleep(60)

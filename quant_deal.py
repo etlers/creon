@@ -1,6 +1,9 @@
 import time
 import yaml
 import sys
+import requests
+import pandas as pd
+from bs4 import BeautifulSoup as bs
 import win32com.client
 
 sys.path.append("C:/Users/etlers/Documents/project/python/common")
@@ -8,9 +11,16 @@ sys.path.append("C:/Users/etlers/Documents/project/python/common")
 import date_util as DU
 import conn_db as DB
 
+# 파일 경로
+result_txt_file = './txt/result.txt'
+quant_high_yaml_file = './config/quant_high.yaml'
+jongmok_yaml_file = './config/jongmok.yaml'
+jongmok_list_csv_file = 'C:/Users/etlers/Documents/project/CSV/jongmok_list.csv'
+# 주문내역 저장할 텍스르 파일
+txt_file = open(result_txt_file, 'w')
 
 # 환경변수 추출
-with open('./config/quant_high.yaml') as stream:
+with open(quant_high_yaml_file) as stream:
     try:
         dict_quant = yaml.safe_load(stream)
         url_param = dict_quant['url_param']
@@ -25,73 +35,52 @@ end_hms = hms_param["end_hms"]
 until_hms = hms_param["until_hms"]
 clear_hms = hms_param["clear_hms"]
 # 조건 데이터 추출쿼리 및 변수
-from_rt = query_param["from_rt"]
-to_rt = query_param["to_rt"]
+from_up_vol_rt = query_param["from_up_vol_rt"]
+to_up_vol_rt = query_param["to_up_vol_rt"]
 from_price = query_param["from_price"]
 to_price = query_param["to_price"]
-# 추출 쿼리
-extract_qry = f"""
-WITH T1 AS (
-SELECT TM
-     , JONGMOK_CD
-     , PRC
-     , VOL
-     , LAG(VOL, 1) OVER(PARTITION BY JONGMOK_CD ORDER BY TM) AS PRE_VOL
-  FROM creon_quant
- WHERE 1 = 1
-   AND VS_PRC > 0
-   AND PRC BETWEEN {from_price} AND {to_price}
-),
-T2 AS (
-SELECT MAX(TM) AS TM
-  FROM creon_quant
-)
-SELECT JONGMOK_CD
-     , PRC
-     , GAP_VOL
-     , UP_VOL_RT
-     , VOL
-     , PRE_VOL
-  FROM (SELECT JONGMOK_CD
-		       , PRC, VOL, PRE_VOL
-		       , VOL - PRE_VOL AS GAP_VOL
-		       , cast(FLOOR(ROUND((VOL - PRE_VOL) / PRE_VOL, 2) * 100) AS INT) AS UP_VOL_RT
-		    FROM T2
-		   INNER JOIN T1
-		      ON T1.TM = T2.TM) TT
- WHERE UP_VOL_RT BETWEEN {from_rt} AND {to_rt}
- ORDER BY UP_VOL_RT DESC
-"""
+from_up_prc_rt = query_param["from_up_prc_rt"]
+to_up_prc_rt = query_param["to_up_prc_rt"]
+vol = query_param["vol"]
+# 대상 추출 쿼리
 first_vs_last_qry = f"""
 WITH NOW_TBL AS (
-SELECT JONGMOK_NM
+SELECT JONGMOK_CD, JONGMOK_NM
      , PRC
      , VOL
   FROM creon_quant
  WHERE PRC BETWEEN {from_price} AND {to_price}
    AND TM = (SELECT MAX(TM) FROM creon_quant)
+   AND VOL > {vol}
 ), PRE_TBL AS(
-SELECT JONGMOK_NM
+SELECT JONGMOK_CD, JONGMOK_NM
      , VOL AS PRE_VOL
+     , PRC AS PRE_PRC
   FROM creon_quant
- WHERE PRC BETWEEN {from_price} AND {to_price}
-   AND TM = (SELECT MIN(TM) FROM creon_quant)
+ WHERE TM = (SELECT MIN(TM) FROM creon_quant)
 )
 SELECT *
-  FROM (SELECT T1.JONGMOK_NM
-			    , T1.PRC
-			    , T1.VOL
-			    , T2.PRE_VOL
-			    , cast(FLOOR(ROUND((VOL - PRE_VOL) / PRE_VOL, 2) * 100) AS INT) AS UP_VOL_RT
-			 FROM NOW_TBL T1
-			INNER JOIN PRE_TBL T2
-			   ON T1.JONGMOK_NM = T2.JONGMOK_NM) TT
- WHERE UP_VOL_RT > {from_rt}
+     , PRC - PRE_PRC AS PRC_GAP
+     , VOL - PRE_VOL AS VOL_GAP
+  FROM (SELECT T1.JONGMOK_CD
+             , T1.PRC
+  			 , T2.PRE_PRC
+			 , T1.VOL
+			 , T2.PRE_VOL
+			 , CAST(ROUND((VOL - PRE_VOL) / PRE_VOL * 100, 2) AS FLOAT) AS UP_VOL_RT
+			 , CAST(ROUND((PRC - PRE_PRC) / PRE_PRC * 100, 2) AS FLOAT) AS UP_PRC_RT
+			 , T1.JONGMOK_NM
+	 	  FROM NOW_TBL T1
+		 INNER JOIN PRE_TBL T2
+		    ON T1.JONGMOK_CD = T2.JONGMOK_CD) TT
+ WHERE 1 = 1
+   AND UP_VOL_RT BETWEEN {from_up_vol_rt} AND {to_up_vol_rt}
+   AND UP_PRC_RT BETWEEN {from_up_prc_rt} AND {to_up_prc_rt}
  ORDER BY UP_VOL_RT DESC
 """
 
 # 종목 명칭, 코드 딕셔너리
-with open('./config/jongmok.yaml', encoding="utf-8-sig") as stream:
+with open(jongmok_yaml_file, encoding="utf-8-sig") as stream:
     try:
         dict_jongmok = yaml.safe_load(stream)
     except yaml.YAMLError as exc:
@@ -101,13 +90,35 @@ with open('./config/jongmok.yaml', encoding="utf-8-sig") as stream:
 base_amount = dict_quant["base_amount"]
 # 매수종목 수
 jongmok_cnt = dict_quant["jongmok_cnt"]
-# 진행 상태.
-# 1: 추출, 2: 매수, 3: 매도, 9: 종료
-dict_status = {
-    "status": 1
-} 
+# 매수, 매도 구분
+dict_order_div = {
+    "1": "매도",
+    "2": "매수"
+}
+# 주문호가 구분코드
+dict_ho_div = {
+    "01": "보통",
+    "03": "시장가",
+    "05": "조건부지정가"
+}
+# sbtm ahrfhr
+list_quick_news = []
 # 매수 매도를 위한 종목 코드
 dict_sell_info = {}
+
+# 종목 명 딕셔너리 생성
+dict_jongmok_nm = {}
+# 종목 딕셔너리 생성
+def make_jongmok_dict():
+    # CSV 데이터 DataFrame으로 추출
+    df_jongmok = pd.read_csv(jongmok_list_csv_file, encoding="CP949")
+    # DataFrame에서 딕셔너리 생성
+    try:
+        df_jongmok = df_jongmok[["단축코드", "한글 종목약명"]]
+        for index, row in df_jongmok.iterrows():
+            dict_jongmok_nm["A" + row["단축코드"]] = row["한글 종목약명"]
+    except:
+        pass
 
 
 g_objCodeMgr = win32com.client.Dispatch('CpUtil.CpCodeMgr')
@@ -182,6 +193,16 @@ class CpStockCur:
 # 미체결 조회 서비스
 class Cp5339:
     def __init__(self):
+        self.bTradeInit = False
+        # 연결 여부 체크
+        if (g_objCpStatus.IsConnect == 0):
+            print("PLUS가 정상적으로 연결되지 않음. ")
+            return False
+        if (g_objCpTrade.TradeInit(0) != 0):
+            print("주문 초기화 실패")
+            return False
+        self.bTradeInit = True
+
         self.objRq = win32com.client.Dispatch("CpTrade.CpTd5339")
         self.acc = g_objCpTrade.AccountNumber[0]  # 계좌번호
         self.accFlag = g_objCpTrade.GoodsList(self.acc, 1)  # 주식상품 구분
@@ -248,6 +269,120 @@ class Cp5339:
                 break
  
         return True
+
+
+# 취소 주문 요청에 대한 응답 이벤트 처리 클래스
+class CpPB0314:
+    def __init__(self, obj) :
+        self.name = "td0314"
+        self.obj = obj
+ 
+    def Subscribe(self, parent):
+        handler = win32com.client.WithEvents(self.obj, CpEvent)
+        handler.set_params(self.obj, self.name, parent)
+
+
+# 주식 주문 취소 클래스
+class CpRPOrder:
+    def __init__(self):
+        self.acc = g_objCpTrade.AccountNumber[0]  # 계좌번호
+        self.accFlag = g_objCpTrade.GoodsList(self.acc, 1)  # 주식상품 구분
+        self.objCancelOrder = win32com.client.Dispatch("CpTrade.CpTd0314")  # 취소
+        self.callback = None
+        self.bIsRq = False
+        self.RqOrderNum = 0     # 취소 주문 중인 주문 번호
+ 
+    # 주문 취소 통신 - Request 를 이용하여 취소 주문
+    # callback 은 취소 주문의 reply 이벤트를 전달하기 위해 필요
+    def RequestCancel(self, ordernum, code, amount, callback):
+        # 주식 취소 주문
+        if self.bIsRq:
+            print("RequestCancel - 통신 중이라 주문 불가 ")
+            return False
+        self.callback = callback
+        print("[CpRPOrder/RequestCancel]취소주문", ordernum, code,amount)
+        self.objCancelOrder.SetInputValue(1, ordernum)  # 원주문 번호 - 정정을 하려는 주문 번호
+        self.objCancelOrder.SetInputValue(2, self.acc)  # 상품구분 - 주식 상품 중 첫번째
+        self.objCancelOrder.SetInputValue(3, self.accFlag[0])  # 상품구분 - 주식 상품 중 첫번째
+        self.objCancelOrder.SetInputValue(4, code)  # 종목코드
+        self.objCancelOrder.SetInputValue(5, amount)  # 정정 수량, 0 이면 잔량 취소임
+ 
+        # 취소주문 요청
+        ret = 0
+        while True:
+            ret = self.objCancelOrder.Request()
+            if ret == 0:
+                break
+ 
+            print("[CpRPOrder/RequestCancel] 주문 요청 실패 ret : ", ret)
+            if ret == 4:
+                remainTime = g_objCpStatus.LimitRequestRemainTime
+                print("연속 통신 초과에 의해 재 통신처리 : ", remainTime / 1000, "초 대기")
+                time.sleep(remainTime / 1000)
+                continue
+            else:   # 1 통신 요청 실패 3 그 외의 오류 4: 주문요청제한 개수 초과
+                return False;
+ 
+ 
+        self.bIsRq = True
+        self.RqOrderNum = ordernum
+ 
+        # 주문 응답(이벤트로 수신
+        self.objReply = CpPB0314(self.objCancelOrder)
+        self.objReply.Subscribe(self)
+        return True
+ 
+    # 취소 주문 - BloockReqeust 를 이용해서 취소 주문
+    def BlockRequestCancel(self, ordernum, code, amount, callback):
+        # 주식 취소 주문
+        self.callback = callback
+        print("[CpRPOrder/BlockRequestCancel]취소주문2", ordernum, code,amount)
+        self.objCancelOrder.SetInputValue(1, ordernum)  # 원주문 번호 - 정정을 하려는 주문 번호
+        self.objCancelOrder.SetInputValue(2, self.acc)  # 상품구분 - 주식 상품 중 첫번째
+        self.objCancelOrder.SetInputValue(3, self.accFlag[0])  # 상품구분 - 주식 상품 중 첫번째
+        self.objCancelOrder.SetInputValue(4, code)  # 종목코드
+        self.objCancelOrder.SetInputValue(5, amount)  # 정정 수량, 0 이면 잔량 취소임
+ 
+        # 취소주문 요청
+        ret = 0
+        while True:
+            ret = self.objCancelOrder.BlockRequest()
+            if ret == 0:
+                break;
+            print("[CpRPOrder/RequestCancel] 주문 요청 실패 ret : ", ret)
+            if ret == 4:
+                remainTime = g_objCpStatus.LimitRequestRemainTime
+                print("연속 통신 초과에 의해 재 통신처리 : ", remainTime / 1000, "초 대기")
+                time.sleep(remainTime / 1000)
+                continue
+            else:   # 1 통신 요청 실패 3 그 외의 오류 4: 주문요청제한 개수 초과
+                return False;
+ 
+        print("[CpRPOrder/BlockRequestCancel] 주문결과", self.objCancelOrder.GetDibStatus(), self.objCancelOrder.GetDibMsg1())
+        if self.objCancelOrder.GetDibStatus() != 0:
+            return False
+        return True
+ 
+    # 주문 취소 Request 에 대한 응답 처리
+    def OrderReply(self):
+        self.bIsRq = False
+ 
+        if self.objCancelOrder.GetDibStatus() != 0:
+            print("[CpRPOrder/OrderReply]통신상태",
+                  self.objCancelOrder.GetDibStatus(), self.objCancelOrder.GetDibMsg1())
+            self.callback.ForwardReply(-1, 0)
+            return False
+ 
+        orderPrev = self.objCancelOrder.GetHeaderValue(1)
+        code = self.objCancelOrder.GetHeaderValue(4)
+        orderNum = self.objCancelOrder.GetHeaderValue(6)
+        amount = self.objCancelOrder.GetHeaderValue(5)
+ 
+        print("[CpRPOrder/OrderReply] 주문 취소 reply, 취소한 주문:",orderPrev, code, orderNum, amount)
+ 
+        # 주문 취소를 요청한 클래스로 포워딩 한다.
+        if (self.callback != None) :
+            self.callback.ForwardReply(0, orderPrev)
  
 
 # Cp7043 상승률 상위 요청 클래스
@@ -347,18 +482,19 @@ class CpMarketEye:
             list_jongmok.append(objRq.GetDataValue(6, i))
             list_whole.append(list_jongmok)
 
-        # 데이터 디비로 저장
+        # 쿼리 헤더
         header = """
             INSERT INTO creon_quant
             ( JONGMOK_CD, TM, VS_SIGN, VS_PRC, PRC, VOL, JONGMOK_NM, HM )
             VALUES"""
         body = ""
         now_tm = DU.get_now_datetime_string().split(" ")[1].replace(":","")
+        # 쿼리 인자 값
         for list_val in list_whole:
             body += f"('{list_val[0]}','{now_tm.zfill(6)}',{list_val[2]},{list_val[3]},{list_val[4]},{list_val[5]},'{list_val[6]}','{str(list_val[1]).zfill(4)}'),"
-
+        # 최종 쿼리
         qry = header + "\n" + body[:len(body)-1]
-
+        # 데이터 디비로 저장
         DB.transaction_data(qry)
 
         print("Save Data:", DU.get_now_datetime_string())
@@ -406,6 +542,17 @@ class quant_jongmok():
         #print("빼기빼기================-")
         #print(cnt , "종목 실시간 현재가 요청 시작")
         self.isSB = True
+
+
+# 해당 종목이 뉴스에 있는지 확인
+def check_news(jongmok_nm):
+    # 뉴스 속보 헤드라인
+    for news in list_quick_news:
+        # 헤드라인에 있으면
+        if jongmok_nm in news:
+            return True
+    
+    return False
 
 
 # Cp6033 : 주식 잔고 조회
@@ -461,8 +608,15 @@ class Cp6033:
                     print("종목코드 종목명 신용구분 체결잔고수량 체결장부단가 평가금액 평가손익")
                 # Data
                 print(code, name, cashFlag, amount, buyPrice, evalValue, evalPerc)
-                # 4.5% 수익률로 매도하기 위한 설정
-                dict_sell_info[code] = [int(amount), int(buyPrice) * 1.045]
+                # 4.5% 수익률 10원 단위로 매도하기 위한 설정
+                prc = int(buyPrice)
+                # 뉴스에 있다면 매도금액 1% 증가
+                if check_news(name):
+                    prc = int(int(prc * 1.045) / 10) * 10
+                else:
+                    prc = int(int(prc * 1.035) / 10) * 10
+                # 딕셔너리에 저장
+                dict_sell_info[code] = [int(amount), prc]
  
     def Request(self, retCode):
         self.rq6033(retCode)
@@ -481,13 +635,19 @@ class Cp6033:
 
 
 # 매수, 매도
-def order_stock(jongmok_cd, div, qty, prc, ho_div):
+def order_stock(jongmok_cd, div, qty, prc, ho_div):        
     result_tf = False
     print("#" * 50)
-    print("주문:", jongmok_cd, div, qty, prc, ho_div)
+    print("#주문:", jongmok_cd, dict_jongmok_nm[jongmok_cd], dict_order_div[div], qty, prc, dict_ho_div[ho_div])    
     print("#" * 50)
+    # 파일 생성 시에 오류로 종료되면 안되기에 예외처리
+    try:
+        txt_file.write("# 주문: " + dict_order_div[div])
+        txt_file.write("  - " + "\t" + jongmok_cd + "[" + dict_jongmok_nm[jongmok_cd] + "]" + "\t" + format(qty, ",") + "\t", format(prc, ",") + "\t" + dict_ho_div[ho_div])
+    except Exception as e:
+        print("File Write Exception:", e)
     # 매수인 경우 딕셔너리 정보 초기화. 종목코드 넣고 수량, 금액은 '0'으로 설정
-    if div == "1":
+    if div == "2":
         dict_sell_info[jongmok_cd] = [0,0]
     
     # 연결 여부 체크
@@ -516,11 +676,10 @@ def order_stock(jongmok_cd, div, qty, prc, ho_div):
     objStockOrder.SetInputValue(4, qty)   #  매도수량
     objStockOrder.SetInputValue(5, prc)   #  주문단가
     objStockOrder.SetInputValue(7, "0")   #  주문 조건 구분 코드, 0: 기본 1: IOC 2:FOK
-    objStockOrder.SetInputValue(8, ho_div)   # 주문호가 구분코드 - 01: 보통 03:시장가 05:조건부지정가
-    
+    objStockOrder.SetInputValue(8, ho_div)   # 주문호가 구분코드 - 01: 보통 03:시장가 05:조건부지정가    
     # 매도 주문 요청
     objStockOrder.BlockRequest()
-    
+    # 상태, 결과
     rqStatus = objStockOrder.GetDibStatus()
     rqRet = objStockOrder.GetDibMsg1()
 
@@ -539,9 +698,9 @@ def get_buy_price():
 
 
 # 종목 추출 & 매수, 매도 처리
-def process_func(now_tm):
-    
-    # 매수
+def process_func():
+
+    # 매수 정보 생성 및 주문
     def set_buy_info(jongmok_cd, now_price, buy_cnt):
         # 시장가 매수를 위한 상한가 10원 단위로 계산한 기준 금액
         base_price = int((now_price * 1.3) / 10) * 10
@@ -569,28 +728,63 @@ def process_func(now_tm):
         try:
             now_price = list_data[1]
             jongmok_cd = list_data[0]
-            # 조건에 맞으면 구매
+            # 매수
             buy_cnt = set_buy_info(jongmok_cd, now_price, buy_cnt)
+            # 지정한 종목 개수가 넘으면 종료
             if buy_cnt > jongmok_cnt:
                 break
         except Exception as e:
-            print("Exception:", e)
+            print("list_extract_data Exception:", e)
 
-    # 구매가 끝났으면 매도 진행
+    # 구매가 끝났으면 매도 진행. 바로 던지면 매수 전이라 매도 주문이 성사가 안됨
+    time.sleep(5)
     # 잔고 요청
     get_buy_price()
+    print("#" * 50)
+    print(dict_sell_info)
+    print("#" * 50)
     # 보유한 주식 매도
     for key, list_val in dict_sell_info.items():
+        if list_val[0] == 0: continue
         try:
             order_stock(key, "1", list_val[0], list_val[1], "01")
         except Exception as e:
-            print("Exception:", e)
+            print("dict_sell_info Exception:", e)
     
-    return True        
+    return True
+
+
+# 뉴스 속보
+def make_quick_news():
+    # 4 페이지 데이터
+    for page in range(4):
+        if page == 0:
+            base_url = f"https://finance.naver.com/news/news_list.nhn?mode=RANK"
+        else:
+            base_url = f"https://finance.naver.com/news/news_list.nhn?mode=RANK&page={page+1}"
+        response = requests.get( base_url )
+        response
+        
+        soup = bs(response.text, 'html.parser')
+
+        content = soup.select("div.hotNewsList")
+        list_content = str(content).split("\n")
+        
+        for str_content in list_content:
+            if "href" in str_content:
+                try:
+                    head_line = str_content.split('title=')[1]
+                except:
+                    head_line = str_content
+
+                list_quick_news.append(head_line[1:].replace("&quot;","").replace("</a>","").replace("&amp;","&").split('">')[0])
 
 
 # 프로그램 시작
 if __name__ == "__main__":
+
+    # 종목 코드, 명칭 딕셔너리 생성
+    make_jongmok_dict()
 
     # 구매가 끝났으면 매도 진행
     def sell_all_stokcs():
@@ -599,10 +793,13 @@ if __name__ == "__main__":
         # 보유한 주식 매도
         for key, list_val in dict_sell_info.items():
             try:
+                # 시장가 매도
                 order_stock(key, "1", list_val[0], 0, "03")
             except Exception as e:
                 print("Exception:", e)
         
+    # 뉴스속보 추출여부
+    quick_news_tf = False
     # 상승률 200 객체 생성
     quant = quant_jongmok()
 
@@ -616,8 +813,12 @@ if __name__ == "__main__":
             continue
         elif now_tm > end_hms:
             break
-        # 최초 테이블 초기화
-        if idx == 0:
+        # 뉴스 속보 긁어오기
+        if (quick_news_tf == False and now_tm > "085945"):
+            make_quick_news()
+            quick_news_tf = True
+        # 9시 이전에만 테이블 초기화
+        if (idx == 0 and now_tm < "090000"):
             qry = "TRUNCATE TABLE creon_quant"
             DB.transaction_data(qry)
         # 상승률 200 데이터 저장
@@ -625,7 +826,7 @@ if __name__ == "__main__":
         idx += 1
         # 세번째 데이터부터 매수를 위한 로직 수행
         if idx > 2:
-            if process_func(now_tm):
+            if process_func():
                 print("매수, 매도 종료")
                 break
             time.sleep(8)
@@ -648,5 +849,36 @@ if __name__ == "__main__":
         # 1분 단위로
         time.sleep(60)
 
+    # 미체결 리스트를 보관한 자료 구조체
+    diOrderList= dict()  # 미체결 내역 딕셔너리 - key: 주문번호, value - 미체결 레코드
+    orderList = []       # 미체결 내역 리스트 - 순차 조회 등을 위한 미체결 리스트
+    # 미체결 통신 object
+    obj = Cp5339()
+    diOrderList = {}
+    orderList = []
+    obj.Request5339(diOrderList, orderList)
+    # 미체결 목록
+    for item in orderList:
+        item.debugPrint()
+    print("#" * 50)
+    print("[Reqeust5339]미체결 개수 ", len(orderList))
+    print("#" * 50)    
+    # 주문 취소 통신 object
+    objOrder = CpRPOrder()
+    # 미체결 전체 취소
+    onums = []
+    codes = []
+    amounts = []
+    callback = None
+    for item in orderList :
+        onums.append(item.orderNum)
+        codes.append(item.code)
+        amounts.append(item.amount)
+    # 미체결 주문번호 개수만큼 취소요청
+    for i in range(len(onums)):
+        objOrder.BlockRequestCancel(onums[i], codes[i], amounts[i], callback)
+
     # 잔고 정리시간이 됐으니 잔고가 있으면 시장가로 매도
     sell_all_stokcs()
+    # 파일 종료
+    txt_file.close()
