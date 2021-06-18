@@ -7,15 +7,15 @@ query_param:
   to_up_vol_rt: 5000.0
   from_price: 5000
   to_price: 25000
-  from_up_prc_rt: 1.0
+  from_up_prc_rt: 1.2
   to_up_prc_rt: 3.0
   vol: 1000000
 
 hms_param:
   start_hms: "090010"
-  end_hms: "093000"
-  until_hms: "100000"
-  clear_hms: "103000"
+  end_hms: "113000"
+  until_hms: "120000"
+  clear_hms: "123000"
 
 base_amount: 1000000
 jongmok_cnt: 3

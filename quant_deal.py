@@ -2,9 +2,9 @@ import time
 import yaml
 import sys
 import requests
-import pandas as pd
 from bs4 import BeautifulSoup as bs
 import win32com.client
+import quick_news as NEWS
 
 sys.path.append("C:/Users/etlers/Documents/project/python/common")
 
@@ -12,7 +12,7 @@ import date_util as DU
 import conn_db as DB
 
 # 파일 경로
-result_txt_file = './txt/result.txt'
+result_txt_file = './txt/creon_deal.txt'
 quant_high_yaml_file = './config/quant_high.yaml'
 jongmok_yaml_file = './config/jongmok.yaml'
 jongmok_list_csv_file = 'C:/Users/etlers/Documents/project/CSV/jongmok_list.csv'
@@ -43,40 +43,29 @@ from_up_prc_rt = query_param["from_up_prc_rt"]
 to_up_prc_rt = query_param["to_up_prc_rt"]
 vol = query_param["vol"]
 # 대상 추출 쿼리
-first_vs_last_qry = f"""
-WITH NOW_TBL AS (
-SELECT JONGMOK_CD, JONGMOK_NM
+extract_qry = f"""
+SELECT JONGMOK_CD
+     , JONGMOK_NM
      , PRC
-     , VOL
-  FROM creon_quant
- WHERE PRC BETWEEN {from_price} AND {to_price}
-   AND TM = (SELECT MAX(TM) FROM creon_quant)
-   AND VOL > {vol}
-), PRE_TBL AS(
-SELECT JONGMOK_CD, JONGMOK_NM
-     , VOL AS PRE_VOL
-     , PRC AS PRE_PRC
-  FROM creon_quant
- WHERE TM = (SELECT MIN(TM) FROM creon_quant)
-)
-SELECT *
-     , PRC - PRE_PRC AS PRC_GAP
-     , VOL - PRE_VOL AS VOL_GAP
-  FROM (SELECT T1.JONGMOK_CD
-             , T1.PRC
-  			 , T2.PRE_PRC
-			 , T1.VOL
-			 , T2.PRE_VOL
-			 , CAST(ROUND((VOL - PRE_VOL) / PRE_VOL * 100, 2) AS FLOAT) AS UP_VOL_RT
-			 , CAST(ROUND((PRC - PRE_PRC) / PRE_PRC * 100, 2) AS FLOAT) AS UP_PRC_RT
-			 , T1.JONGMOK_NM
-	 	  FROM NOW_TBL T1
-		 INNER JOIN PRE_TBL T2
-		    ON T1.JONGMOK_CD = T2.JONGMOK_CD) TT
+  FROM (SELECT JONGMOK_CD, JONGMOK_NM
+		       , PRC
+		       , ROUND(((PRC - PRE_PRC) / PRE_PRC) * 100 , 2) AS GAP_PRC_RT
+		       , VOL
+		       , ROUND(((VOL - PRE_VOL) / PRE_VOL) * 100 , 2) AS GAP_VOL_RT
+		    FROM (SELECT *
+		               , LAG(PRC, 3) OVER(PARTITION BY JONGMOK_CD ORDER BY TM) AS PRE_PRC
+		               , LAG(VOL, 3) OVER(PARTITION BY JONGMOK_CD ORDER BY TM) AS PRE_VOL
+		            FROM creon_quant
+				   WHERE 1 = 1
+                     AND PRC BETWEEN {from_price} AND {to_price}
+                     AND VOL > {vol}) T1
+		   WHERE 1 = 1
+			  AND TM = (SELECT MAX(TM) FROM creon_quant)) TT
  WHERE 1 = 1
-   AND UP_VOL_RT BETWEEN {from_up_vol_rt} AND {to_up_vol_rt}
-   AND UP_PRC_RT BETWEEN {from_up_prc_rt} AND {to_up_prc_rt}
- ORDER BY UP_VOL_RT DESC
+   AND GAP_PRC_RT BETWEEN {from_up_prc_rt} AND {to_up_prc_rt}
+   AND GAP_VOL_RT BETWEEN {from_up_vol_rt} AND {to_up_vol_rt}
+ ORDER BY GAP_PRC_RT DESC, GAP_VOL_RT DESC
+ LIMIT 3
 """
 
 # 종목 명칭, 코드 딕셔너리
@@ -101,24 +90,12 @@ dict_ho_div = {
     "03": "시장가",
     "05": "조건부지정가"
 }
-# sbtm ahrfhr
+# 뉴스속보
 list_quick_news = []
 # 매수 매도를 위한 종목 코드
 dict_sell_info = {}
-
-# 종목 명 딕셔너리 생성
-dict_jongmok_nm = {}
-# 종목 딕셔너리 생성
-def make_jongmok_dict():
-    # CSV 데이터 DataFrame으로 추출
-    df_jongmok = pd.read_csv(jongmok_list_csv_file, encoding="CP949")
-    # DataFrame에서 딕셔너리 생성
-    try:
-        df_jongmok = df_jongmok[["단축코드", "한글 종목약명"]]
-        for index, row in df_jongmok.iterrows():
-            dict_jongmok_nm["A" + row["단축코드"]] = row["한글 종목약명"]
-    except:
-        pass
+# 매수한 종목코드 이후 잔고 및 매도에 사용
+list_jongmok_cd = []
 
 
 g_objCodeMgr = win32com.client.Dispatch('CpUtil.CpCodeMgr')
@@ -496,7 +473,7 @@ class CpMarketEye:
         qry = header + "\n" + body[:len(body)-1]
         # 데이터 디비로 저장
         DB.transaction_data(qry)
-
+        print(qry)
         print("Save Data:", DU.get_now_datetime_string())
         
         return True
@@ -573,6 +550,9 @@ class Cp6033:
         self.objRq.SetInputValue(0, acc)  # 계좌번호
         self.objRq.SetInputValue(1, accFlag[0])  # 상품구분 - 주식 상품 중 첫번째
         self.objRq.SetInputValue(2, 50)  #  요청 건수(최대 50)
+
+        # 뉴스 속보
+        self.list_quick_news = NEWS.get_quick_news()
  
     # 실제적인 6033 통신 처리
     def rq6033(self, retcode):
@@ -610,11 +590,13 @@ class Cp6033:
                 print(code, name, cashFlag, amount, buyPrice, evalValue, evalPerc)
                 # 4.5% 수익률 10원 단위로 매도하기 위한 설정
                 prc = int(buyPrice)
-                # 뉴스에 있다면 매도금액 1% 증가
-                if check_news(name):
-                    prc = int(int(prc * 1.045) / 10) * 10
-                else:
-                    prc = int(int(prc * 1.035) / 10) * 10
+                # 매도이익 설정을 위한 저장
+                prc = int(int(prc * 1.030) / 10) * 10
+                for headline in self.list_quick_news:
+                    # 뉴스에 있다면 4.5%
+                    if name in headline:
+                        prc = int(int(prc * 1.045) / 10) * 10
+                        break
                 # 딕셔너리에 저장
                 dict_sell_info[code] = [int(amount), prc]
  
@@ -635,15 +617,15 @@ class Cp6033:
 
 
 # 매수, 매도
-def order_stock(jongmok_cd, div, qty, prc, ho_div):        
+def order_stock(jongmok_cd, div, qty, prc, ho_div, jongmok_nm=""):        
     result_tf = False
     print("#" * 50)
-    print("#주문:", jongmok_cd, dict_jongmok_nm[jongmok_cd], dict_order_div[div], qty, prc, dict_ho_div[ho_div])    
+    print("#주문:", jongmok_cd, jongmok_nm, dict_order_div[div], qty, prc, dict_ho_div[ho_div])    
     print("#" * 50)
     # 파일 생성 시에 오류로 종료되면 안되기에 예외처리
     try:
         txt_file.write("# 주문: " + dict_order_div[div])
-        txt_file.write("  - " + "\t" + jongmok_cd + "[" + dict_jongmok_nm[jongmok_cd] + "]" + "\t" + format(qty, ",") + "\t", format(prc, ",") + "\t" + dict_ho_div[ho_div])
+        txt_file.write("  - " + "\t" + jongmok_cd + "[" + jongmok_nm + "]" + "\t" + format(qty, ",") + "\t" + format(prc, ",") + "\t" + dict_ho_div[ho_div])
     except Exception as e:
         print("File Write Exception:", e)
     # 매수인 경우 딕셔너리 정보 초기화. 종목코드 넣고 수량, 금액은 '0'으로 설정
@@ -684,6 +666,7 @@ def order_stock(jongmok_cd, div, qty, prc, ho_div):
     rqRet = objStockOrder.GetDibMsg1()
 
     result_tf = True
+    list_jongmok_cd.append(jongmok_cd)
 
     return result_tf
 
@@ -691,17 +674,14 @@ def order_stock(jongmok_cd, div, qty, prc, ho_div):
 # 구매한 금액, 수량
 def get_buy_price():
     remain = Cp6033()
-    list_codes = []
-    for key, val in dict_sell_info.items():
-        list_codes.append(key)
-    remain.Request(list_codes)
+    remain.Request(list_jongmok_cd)
 
 
 # 종목 추출 & 매수, 매도 처리
 def process_func():
 
     # 매수 정보 생성 및 주문
-    def set_buy_info(jongmok_cd, now_price, buy_cnt):
+    def set_buy_info(jongmok_cd, jongmok_nm, now_price):
         # 시장가 매수를 위한 상한가 10원 단위로 계산한 기준 금액
         base_price = int((now_price * 1.3) / 10) * 10
         # 계산한 매수량
@@ -710,29 +690,23 @@ def process_func():
         if buy_ea > 100:
             buy_ea = 100
         # 시장가 매수
-        if order_stock(jongmok_cd, "2", buy_ea, 0, "03"):
-            buy_cnt += 1
-            return buy_cnt
-        else:
-            return 0
+        order_stock(jongmok_cd, "2", buy_ea, 0, "03", jongmok_nm)
     
     # 추출한 데이터
-    list_extract_data = DB.query_data(first_vs_last_qry)
+    list_extract_data = DB.query_data(extract_qry)
     # 없으면 빠져나감
     if len(list_extract_data) == 0:
+        print("No Data")
         return False
     # 존재하면 처리로 들어감  
-    buy_cnt = 0  
     for list_data in list_extract_data:
         # 종목코드가 없을 수도 있기에 예외처리
         try:
-            now_price = list_data[1]
             jongmok_cd = list_data[0]
+            jongmok_nm = list_data[1]
+            now_price = list_data[2]
             # 매수
-            buy_cnt = set_buy_info(jongmok_cd, now_price, buy_cnt)
-            # 지정한 종목 개수가 넘으면 종료
-            if buy_cnt > jongmok_cnt:
-                break
+            set_buy_info(jongmok_cd, jongmok_nm, now_price)
         except Exception as e:
             print("list_extract_data Exception:", e)
 
@@ -754,39 +728,13 @@ def process_func():
     return True
 
 
-# 뉴스 속보
-def make_quick_news():
-    # 4 페이지 데이터
-    for page in range(4):
-        if page == 0:
-            base_url = f"https://finance.naver.com/news/news_list.nhn?mode=RANK"
-        else:
-            base_url = f"https://finance.naver.com/news/news_list.nhn?mode=RANK&page={page+1}"
-        response = requests.get( base_url )
-        response
-        
-        soup = bs(response.text, 'html.parser')
-
-        content = soup.select("div.hotNewsList")
-        list_content = str(content).split("\n")
-        
-        for str_content in list_content:
-            if "href" in str_content:
-                try:
-                    head_line = str_content.split('title=')[1]
-                except:
-                    head_line = str_content
-
-                list_quick_news.append(head_line[1:].replace("&quot;","").replace("</a>","").replace("&amp;","&").split('">')[0])
-
-
 # 프로그램 시작
 if __name__ == "__main__":
 
     # 종목 코드, 명칭 딕셔너리 생성
-    make_jongmok_dict()
+    # make_jongmok_dict()
 
-    # 구매가 끝났으면 매도 진행
+    # 시간 내에 매도를 못 했다면 시가 정리매도 진행
     def sell_all_stokcs():
         # 잔고 요청
         get_buy_price()
@@ -796,12 +744,15 @@ if __name__ == "__main__":
                 # 시장가 매도
                 order_stock(key, "1", list_val[0], 0, "03")
             except Exception as e:
-                print("Exception:", e)
+                print("sell_all_stokcs Exception:", e)
         
     # 뉴스속보 추출여부
     quick_news_tf = False
     # 상승률 200 객체 생성
     quant = quant_jongmok()
+    # 데이터 초기화
+    qry = "TRUNCATE TABLE creon_quant"
+    DB.transaction_data(qry)
 
     idx = 0
     while True:
@@ -813,14 +764,6 @@ if __name__ == "__main__":
             continue
         elif now_tm > end_hms:
             break
-        # 뉴스 속보 긁어오기
-        if (quick_news_tf == False and now_tm > "085945"):
-            make_quick_news()
-            quick_news_tf = True
-        # 9시 이전에만 테이블 초기화
-        if (idx == 0 and now_tm < "090000"):
-            qry = "TRUNCATE TABLE creon_quant"
-            DB.transaction_data(qry)
         # 상승률 200 데이터 저장
         quant.get_quant_data()
         idx += 1
