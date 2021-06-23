@@ -1,4 +1,6 @@
-import os, sys
+import os, sys, yaml
 import quick_news as NEWS
 
-print(NEWS.get_quick_news())
+hm = "093015"
+
+print(hm[:4])

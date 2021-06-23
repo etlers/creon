@@ -1,5 +1,16 @@
+import yaml
 import requests
 from bs4 import BeautifulSoup as bs
+
+quant_high_yaml_file = './config/quant_high.yaml'
+
+# 환경변수 추출
+with open(quant_high_yaml_file) as stream:
+    try:
+        dict_quant = yaml.safe_load(stream)
+        url_param = dict_quant['url_param']
+    except yaml.YAMLError as exc:
+        print(exc)
 
 # 뉴스 속보
 def get_quick_news():
@@ -7,9 +18,9 @@ def get_quick_news():
     # 4 페이지 데이터
     for page in range(4):
         if page == 0:
-            base_url = f"https://finance.naver.com/news/news_list.nhn?mode=RANK"
+            base_url = url_param["quick_news"]
         else:
-            base_url = f"https://finance.naver.com/news/news_list.nhn?mode=RANK&page={page+1}"
+            base_url = url_param["quick_news"] + f"&page={page+1}"
         response = requests.get( base_url )
         response
         

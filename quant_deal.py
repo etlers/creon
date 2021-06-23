@@ -23,7 +23,6 @@ txt_file = open(result_txt_file, 'w')
 with open(quant_high_yaml_file) as stream:
     try:
         dict_quant = yaml.safe_load(stream)
-        url_param = dict_quant['url_param']
         query_param = dict_quant['query_param']
         hms_param = dict_quant['hms_param']
     except yaml.YAMLError as exc:
@@ -41,29 +40,35 @@ from_price = query_param["from_price"]
 to_price = query_param["to_price"]
 from_up_prc_rt = query_param["from_up_prc_rt"]
 to_up_prc_rt = query_param["to_up_prc_rt"]
+gap_prc_rt = query_param["gap_prc_rt"]
+gap_vol_rt = query_param["gap_vol_rt"]
 vol = query_param["vol"]
 # 대상 추출 쿼리
 extract_qry = f"""
 SELECT JONGMOK_CD
      , JONGMOK_NM
      , PRC
-  FROM (SELECT JONGMOK_CD, JONGMOK_NM
-		       , PRC
-		       , ROUND(((PRC - PRE_PRC) / PRE_PRC) * 100 , 2) AS GAP_PRC_RT
-		       , VOL
-		       , ROUND(((VOL - PRE_VOL) / PRE_VOL) * 100 , 2) AS GAP_VOL_RT
-		    FROM (SELECT *
-		               , LAG(PRC, 3) OVER(PARTITION BY JONGMOK_CD ORDER BY TM) AS PRE_PRC
-		               , LAG(VOL, 3) OVER(PARTITION BY JONGMOK_CD ORDER BY TM) AS PRE_VOL
-		            FROM creon_quant
-				   WHERE 1 = 1
-                     AND PRC BETWEEN {from_price} AND {to_price}
-                     AND VOL > {vol}) T1
-		   WHERE 1 = 1
-			  AND TM = (SELECT MAX(TM) FROM creon_quant)) TT
+  FROM (SELECT JONGMOK_CD, JONGMOK_NM, PRC
+		     , ROUND(((PRC - PRE3_PRC) / PRE3_PRC) * 100 , 2) AS GAP_PRC_RT
+		     , ROUND(((VOL - PRE3_VOL) / PRE3_VOL) * 100 , 2) AS GAP_VOL_RT
+		  FROM (SELECT *
+		             , LAG(PRC, 1) OVER(PARTITION BY JONGMOK_CD ORDER BY TM) AS PRE1_PRC
+		             , LAG(VOL, 1) OVER(PARTITION BY JONGMOK_CD ORDER BY TM) AS PRE1_VOL
+                     , LAG(PRC, 2) OVER(PARTITION BY JONGMOK_CD ORDER BY TM) AS PRE2_PRC
+		             , LAG(VOL, 2) OVER(PARTITION BY JONGMOK_CD ORDER BY TM) AS PRE2_VOL
+                     , LAG(PRC, 3) OVER(PARTITION BY JONGMOK_CD ORDER BY TM) AS PRE3_PRC
+		             , LAG(VOL, 3) OVER(PARTITION BY JONGMOK_CD ORDER BY TM) AS PRE3_VOL
+		          FROM creon_quant
+		         WHERE 1 = 1
+                   AND VOL > {vol}
+                   AND PRC BETWEEN {from_price} AND {to_price}) T1
+		 WHERE 1 = 1
+		   AND TM = (SELECT MAX(TM) FROM creon_quant)
+           AND PRE2_PRC > PRE3_PRC AND PRE1_PRC > PRE2_PRC AND PRC > PRE1_PRC
+		   AND PRE2_VOL > PRE3_VOL AND PRE1_VOL > PRE2_VOL AND VOL > PRE1_VOL) TT
  WHERE 1 = 1
-   AND GAP_PRC_RT BETWEEN {from_up_prc_rt} AND {to_up_prc_rt}
-   AND GAP_VOL_RT BETWEEN {from_up_vol_rt} AND {to_up_vol_rt}
+   AND GAP_PRC_RT > {gap_prc_rt}
+   AND GAP_VOL_RT > {gap_vol_rt}
  ORDER BY GAP_PRC_RT DESC, GAP_VOL_RT DESC
  LIMIT 3
 """
@@ -566,8 +571,6 @@ class Cp6033:
             return False
  
         cnt = self.objRq.GetHeaderValue(7)
-        #print(cnt)
-        idx = 0
         for i in range(cnt):
             code = self.objRq.GetDataValue(12, i)  # 종목코드
             name = self.objRq.GetDataValue(0, i)  # 종목명
@@ -582,15 +585,16 @@ class Cp6033:
             evalPerc = self.objRq.GetDataValue(11, i) # 평가손익
             # 데이터가 정상인 경우
             if len(name.strip()) > 0:
-                idx += 1
                 # header
                 if i == 1:
                     print("종목코드 종목명 신용구분 체결잔고수량 체결장부단가 평가금액 평가손익")
                 # Data
                 print(code, name, cashFlag, amount, buyPrice, evalValue, evalPerc)
-                # 4.5% 수익률 10원 단위로 매도하기 위한 설정
+                ###################################################################################
+                # 수익률 10원 단위로 매도하기 위한 매수가격 추출 및 매도가격 설정
+                ###################################################################################
                 prc = int(buyPrice)
-                # 매도이익 설정을 위한 저장
+                # 매도이익 설정을 위한 저장. 기본 3% 수익률 지정
                 prc = int(int(prc * 1.030) / 10) * 10
                 for headline in self.list_quick_news:
                     # 뉴스에 있다면 4.5%
@@ -599,6 +603,7 @@ class Cp6033:
                         break
                 # 딕셔너리에 저장
                 dict_sell_info[code] = [int(amount), prc]
+                ###################################################################################
  
     def Request(self, retCode):
         self.rq6033(retCode)
@@ -731,9 +736,6 @@ def process_func():
 # 프로그램 시작
 if __name__ == "__main__":
 
-    # 종목 코드, 명칭 딕셔너리 생성
-    # make_jongmok_dict()
-
     # 시간 내에 매도를 못 했다면 시가 정리매도 진행
     def sell_all_stokcs():
         # 잔고 요청
@@ -765,17 +767,21 @@ if __name__ == "__main__":
         elif now_tm > end_hms:
             break
         # 상승률 200 데이터 저장
-        quant.get_quant_data()
-        idx += 1
-        # 세번째 데이터부터 매수를 위한 로직 수행
-        if idx > 2:
-            if process_func():
-                print("매수, 매도 종료")
+        while True:
+            # 최대 10회까지 요청을 해봄
+            if idx > 10: break
+            try:
+                quant.get_quant_data()
                 break
-            time.sleep(8)
+            except:
+                idx += 1
+                time.sleep(1)
+        # 세번째 데이터부터 매수를 위한 로직 수행
+        if process_func():
+            print("매수, 매도 종료")
+            break
         # 대기
-        else:
-            time.sleep(9)
+        time.sleep(9)
 
     # 종료 후에도 데이터는 지정한 시간까지 저장
     print("지정시간 데이터 저장 시작")

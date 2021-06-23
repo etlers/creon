@@ -1,27 +1,20 @@
-"""
-    저가대비 급등 & 거래량 급증 종목
-"""
 from os import remove
 import requests
 from bs4 import BeautifulSoup as bs
 import time, sys, yaml
 import win32com.client
 import quick_news as NEWS
-import creon as CREON
 
 sys.path.append("C:/Users/etlers/Documents/project/python/common")
 
 import date_util as DU
 import conn_db as DB
 
-
 # 파일 경로
-result_txt_file = './txt/naver_deal.txt'
+result_txt_file = './txt/naver_condition_deal.txt'
 quant_high_yaml_file = './config/quant_high.yaml'
-jongmok_yaml_file = './config/jongmok.yaml'
-jongmok_list_csv_file = 'C:/Users/etlers/Documents/project/CSV/jongmok_list.csv'
 # 주문내역 저장할 텍스르 파일
-txt_file = open(result_txt_file, 'w')
+txt_file = open(result_txt_file, 'w', encoding="utf-8")
 
 # 환경변수 추출
 with open(quant_high_yaml_file) as stream:
@@ -49,9 +42,19 @@ roe = query_param["roe"]
 vol = query_param["vol"]
 # 기본 금액
 base_amount = dict_quant["base_amount"]
-# 잔고 조회를 위한 종목
-list_jongmok_cd = []
+
+# 골든크로스. 단기(20일) 이동평균선이 장기(60일) 이동평균선을 돌파하는 경우의 종
+url_gold = "https://finance.naver.com/sise/item_gold.nhn"
+# 갭상승. 갭상승 종목중에서 전일 고가보다 당일 저가가 높은 종
+url_gap = "https://finance.naver.com/sise/item_gap.nhn"
+# 이격도과열. 당일 주가(현재가)를 이동평균값(20일)으로 나눈 비율이 120%이상 일 경우의 종목
+url_igyuk = "https://finance.naver.com/sise/item_igyuk.nhn"
+# 상대강도과열. 14일의 상승폭 합/(14 일의 상승폭 합+하락폭 합)의 비율이며 그 비율이 80%이상 일 경우의 종목
+url_overheat = "https://finance.naver.com/sise/item_overheating_2.nhn"
 # 데이터 추출 URL
+list_condition = [
+    url_igyuk, url_overheat, url_gap, url_gold
+]
 list_quant_high_url = [
     url_param["sise_quant_high"]["kospi"],
     url_param["sise_quant_high"]["kosdak"]
@@ -64,77 +67,47 @@ list_sise_url = [
     url_param["sise_rising"]["kospi"],
     url_param["sise_rising"]["kosdak"]
 ]
-# 현재가가 3회 연속 증가 중인 종목을 매수를 위한 추출 쿼리
-# 시세 급증 & 자가대비 급등 & 거래량 급등
-extract_qry = f"""
+
+list_jongmok_cd = []
+
+# 매수, 매도 구분
+dict_order_div = {
+    "1": "매도",
+    "2": "매수"
+}
+# 주문호가 구분코드
+dict_ho_div = {
+    "01": "보통",
+    "03": "시장가",
+    "05": "조건부지정가"
+}
+# 매수 매도를 위한 종목 코드
+dict_sell_info = {}
+
+qry_head = """
+insert into naver_condition
+(jongmok_cd, jongmok_nm, prc, up_rt, vol, rnk, points)
+values
+"""
+
+extract_qry = """
 SELECT JONGMOK_CD
-     , MAX(JONGMOK_NM) AS JONGMOK_NM
-	 , MAX(PRC) AS PRC
-  FROM (SELECT JONGMOK_CD, JONGMOK_NM, PRC
-			 , ROUND(((PRC - PRE3_PRC) / PRE3_PRC) * 100 , 2) AS GAP_PRC_RT
-			 , ROUND(((VOL - PRE3_VOL) / PRE3_VOL) * 100 , 2) AS GAP_VOL_RT
-		  FROM (SELECT *
-			         , LAG(PRC, 1) OVER(PARTITION BY JONGMOK_CD ORDER BY INS_DTM) AS PRE1_PRC
-					 , LAG(VOL, 1) OVER(PARTITION BY JONGMOK_CD ORDER BY INS_DTM) AS PRE1_VOL
-					 , LAG(PRC, 2) OVER(PARTITION BY JONGMOK_CD ORDER BY INS_DTM) AS PRE2_PRC
-					 , LAG(VOL, 2) OVER(PARTITION BY JONGMOK_CD ORDER BY INS_DTM) AS PRE2_VOL
-					 , LAG(PRC, 3) OVER(PARTITION BY JONGMOK_CD ORDER BY INS_DTM) AS PRE3_PRC
-					 , LAG(VOL, 3) OVER(PARTITION BY JONGMOK_CD ORDER BY INS_DTM) AS PRE3_VOL
-				  FROM naver_low_vs_rt
-			 	 WHERE 1 = 1
-				   AND LOW_VS_RT > {low_vs_rt}
-			       AND VOL > {vol}
-				   AND PRC BETWEEN {from_price} AND {to_price}
-				   AND ROE > {roe}) T1
+     , JONGMOK_NM
+     , PRC
+  FROM (SELECT JONGMOK_CD
+		     , JONGMOK_NM
+		     , MAX(PRC) AS PRC
+		     , SUM(VOL) AS VOL
+		     , SUM(POINTS) AS POINTS
+		     , COUNT(*) AS CNT
+		  FROM naver_condition
 		 WHERE 1 = 1
-		   AND INS_DTM = (SELECT MAX(INS_DTM) FROM naver_low_vs_rt)
-		   AND PRE2_PRC > PRE3_PRC AND PRE1_PRC > PRE2_PRC AND PRC > PRE1_PRC
-		   AND PRE2_VOL > PRE3_VOL AND PRE1_VOL > PRE2_VOL AND VOL > PRE1_VOL   
-        UNION ALL
-		SELECT JONGMOK_CD, JONGMOK_NM, PRC
-		     , ROUND(((PRC - PRE3_PRC) / PRE3_PRC) * 100 , 2) AS GAP_PRC_RT
-		     , ROUND(((VOL - PRE3_VOL) / PRE3_VOL) * 100 , 2) AS GAP_VOL_RT
-		  FROM (SELECT *
-			         , LAG(PRC, 1) OVER(PARTITION BY JONGMOK_CD ORDER BY INS_DTM) AS PRE1_PRC
-			         , LAG(VOL, 1) OVER(PARTITION BY JONGMOK_CD ORDER BY INS_DTM) AS PRE1_VOL
-			         , LAG(PRC, 2) OVER(PARTITION BY JONGMOK_CD ORDER BY INS_DTM) AS PRE2_PRC
-			         , LAG(VOL, 2) OVER(PARTITION BY JONGMOK_CD ORDER BY INS_DTM) AS PRE2_VOL
-			         , LAG(PRC, 3) OVER(PARTITION BY JONGMOK_CD ORDER BY INS_DTM) AS PRE3_PRC
-			         , LAG(VOL, 3) OVER(PARTITION BY JONGMOK_CD ORDER BY INS_DTM) AS PRE3_VOL
-			      FROM naver_sise_rising
-				 WHERE 1 = 1
-				   AND ROE > {roe}
-		           AND VOL > {vol}
-				   AND PRC BETWEEN {from_price} AND {to_price}) T1
-		 WHERE 1 = 1
-		   AND INS_DTM = (SELECT MAX(INS_DTM) FROM naver_sise_rising)
-		   AND PRE2_PRC > PRE3_PRC AND PRE1_PRC > PRE2_PRC AND PRC > PRE1_PRC
-		   AND PRE2_VOL > PRE3_VOL AND PRE1_VOL > PRE2_VOL AND VOL > PRE1_VOL        
-		UNION ALL
-		SELECT JONGMOK_CD, JONGMOK_NM, PRC
-		     , ROUND(((PRC - PRE3_PRC) / PRE3_PRC) * 100 , 2) AS GAP_PRC_RT
-		     , ROUND(((VOL - PRE3_VOL) / PRE3_VOL) * 100 , 2) AS GAP_VOL_RT
-		  FROM (SELECT *
-			         , LAG(PRC, 1) OVER(PARTITION BY JONGMOK_CD ORDER BY INS_DTM) AS PRE1_PRC
-			         , LAG(VOL, 1) OVER(PARTITION BY JONGMOK_CD ORDER BY INS_DTM) AS PRE1_VOL
-			         , LAG(PRC, 2) OVER(PARTITION BY JONGMOK_CD ORDER BY INS_DTM) AS PRE2_PRC
-			         , LAG(VOL, 2) OVER(PARTITION BY JONGMOK_CD ORDER BY INS_DTM) AS PRE2_VOL
-			         , LAG(PRC, 3) OVER(PARTITION BY JONGMOK_CD ORDER BY INS_DTM) AS PRE3_PRC
-			         , LAG(VOL, 3) OVER(PARTITION BY JONGMOK_CD ORDER BY INS_DTM) AS PRE3_VOL
-			      FROM naver_quant_high
-				 WHERE 1 = 1
-				   AND INC_RT > 100.0
-		           AND VOL > {vol}
-				   AND PRC BETWEEN {from_price} AND {to_price}) T1
-		 WHERE 1 = 1
-		   AND INS_DTM = (SELECT MAX(INS_DTM) FROM naver_quant_high)
-		   AND PRE2_PRC > PRE3_PRC AND PRE1_PRC > PRE2_PRC AND PRC > PRE1_PRC
-		   AND PRE2_VOL > PRE3_VOL AND PRE1_VOL > PRE2_VOL AND VOL > PRE1_VOL) TT
- WHERE 1 = 1
-   AND GAP_PRC_RT > {gap_prc_rt}
-   AND GAP_VOL_RT > {gap_vol_rt}
- GROUP BY JONGMOK_CD
- HAVING COUNT(*) > 2
+           AND PRC BETWEEN 5000 AND 25000
+           AND VOL BETWEEN 150000 AND 300000
+		   AND UP_RT BETWEEN 1.0 AND 2.5
+		 GROUP BY JONGMOK_CD
+		HAVING COUNT(*) > 1) T1
+ ORDER BY POINTS DESC, VOL DESC, PRC
  LIMIT 3
 """
 
@@ -159,7 +132,7 @@ class Cp6033:
         self.objRq.SetInputValue(2, 50)  #  요청 건수(최대 50)
 
         # 뉴스 속보
-        self.list_quick_news = NEWS.get_quick_news()                
+        self.list_quick_news = NEWS.get_quick_news()
  
     # 실제적인 6033 통신 처리
     def rq6033(self, retcode):
@@ -220,9 +193,18 @@ class Cp6033:
         size = len(retCode)
         for i in range(size):
             print(retCode[i])
-        
-        return True        
+        return True
 
+
+# 랭킹에 따른 포인트
+def calc_rank_point(rnk):
+    if rnk < 4: points = 10
+    elif rnk < 10: points = 7
+    elif rnk < 21: points = 5
+    elif rnk < 31: points = 3
+    else: points = 1
+    
+    return points
 
 # 데이터 타입에 맞게 재생성
 def remake_list(list_base, num_cols, rate_cols):    
@@ -239,10 +221,9 @@ def remake_list(list_base, num_cols, rate_cols):
             num = 0
         list_base[rate_cols[idx]] = num
         
-    return list_base
+    return list_base    
 
-
-# 저가대비 급등 데이터 저장
+# 급등 데이터 추출
 def get_sudden_rising_data(base_url):
     list_whole = []
 
@@ -275,24 +256,28 @@ def get_sudden_rising_data(base_url):
 
     return list_whole
 
+# 급등 데이터 생성
+def get_sudden_rising():
 
-# 저가대비 급등 데이터 생성
-def make_sudden_rising():
-
-    def make_qry_n_save_data(list_result, head, ins_dtm):
+    def make_qry_n_save_data(list_result, list_data_value):     
         body = ""
+        rnk = 0
         for list_row in list_result:
-            row = "( '" + ins_dtm + "', "
+            row = "( "
+            rnk += 1
             for idx in range(len(list_row)):
-                try:
-                    row += "'" + list_row[idx] + "', "
-                except:
-                    row += str(list_row[idx]) + ", "
-            row += ")," + "\n"
+                if idx in list_data_value:
+                    try:
+                        row += "'" + list_row[idx] + "', "
+                    except:
+                        row += str(list_row[idx]) + ", "
+            # 포인트 계산
+            points = calc_rank_point(rnk)
+            row += str(rnk) + ", " + str(points) + ")," + "\n"
             row = row.replace(", )", ")")
             body += row
         # 저장 쿼리 생성
-        ins_qry = head + body
+        ins_qry = qry_head + body
         ins_qry = ins_qry[:len(ins_qry)-2]
         # 디비로 저장
         try:
@@ -316,13 +301,9 @@ def make_sudden_rising():
             for list_row in list_whole:
                 if len(list_row) == 12:
                     list_result.append(remake_list(list_row, num_cols, rate_cols))
+            list_data_value = [1, 2, 3, 5, 9]
                     
-            head = """
-                insert into naver_low_vs_rt
-                (ins_dtm, low_vs_rt, jongmok_cd, jongmok_nm, prc, pre_vs_gap, pre_vs_rt, start_prc, high_prc, low_prc, vol, per, roe)
-                values
-            """
-            make_qry_n_save_data(list_result, head, ins_dtm)
+            make_qry_n_save_data(list_result, list_data_value)
 
     def save_quant_high_data():
         num_cols = [3,4,6,7,8,9]
@@ -337,13 +318,9 @@ def make_sudden_rising():
             for list_row in list_whole:
                 if len(list_row) == 11:
                     list_result.append(remake_list(list_row, num_cols, rate_cols))
+            list_data_value = [1, 2, 3, 5, 8]
                     
-            head = """
-                insert into naver_quant_high
-                (INS_DTM, INC_RT, JONGMOK_CD, JONGMOK_NM, PRC, PRE_VS_GAP, PRE_VS_RT, BUY_PRC, SELL_PRC, VOL, PRE_VOL, PER)
-                values
-            """
-            make_qry_n_save_data(list_result, head, ins_dtm)
+            make_qry_n_save_data(list_result, list_data_value)
 
     def save_sise_rising():
         num_cols = [2,3,5,6,7,8,9]
@@ -358,13 +335,9 @@ def make_sudden_rising():
             for list_row in list_whole:
                 if len(list_row) == 12:
                     list_result.append(remake_list(list_row, num_cols, rate_cols))
+            list_data_value = [0, 1, 2, 4, 5]
                     
-            head = """
-            insert into naver_sise_rising
-            (INS_DTM, JONGMOK_CD, JONGMOK_NM, PRC, PRE_VS_GAP, PRE_VS_RT, VOL, BUY_PRC, SELL_PRC, BUY_REMAIN_VOL, SELL_REMAIN_VOL, PER, ROE)
-            values
-            """        
-            make_qry_n_save_data(list_result, head, ins_dtm)
+            make_qry_n_save_data(list_result, list_data_value)
 
     # 저가대비 급등
     save_low_up_data()
@@ -373,26 +346,43 @@ def make_sudden_rising():
     # 시세 급등
     save_sise_rising()
 
+def get_condition_data(base_url):
+    list_whole = []
+
+    response = requests.get( base_url )
+    soup = bs(response.text, 'html.parser')    
+
+    content = soup.select("div.box_type_l")
+    list_content = str(content).split("\n")
+    list_jongmok = []
+    for row_data in list_content:
+        row = row_data.strip().replace("\t","")
+        if '<td class="no">' in row:
+            if len(list_jongmok) > 0:
+                list_whole.append(list_jongmok)
+                list_jongmok = []
+        elif "tltle" in row:
+            jongmok_cd = row.split("code=")[1].split('"')[0]
+            jongmok_nm = row.split("code=")[1].split('"')[1].split('</a')[0].replace(">","")
+            list_jongmok.append("A" + jongmok_cd)
+            list_jongmok.append(jongmok_nm)
+        elif row[:1] != "<":
+            list_jongmok.append(row)
+        elif ("<td" not in row or row[:4] == "<tr>"):
+            continue
+        else:
+            num_val = row.replace('<td class="number">','')
+            if len(num_val) == 0:
+                continue
+            list_jongmok.append(num_val.replace("</td>",""))
+
+    return list_whole
+
 
 # 구매한 금액, 수량
 def get_buy_price():
     remain = Cp6033()
-    remain.Request(list_jongmok_cd)
-
-
-# 매수, 매도 구분
-dict_order_div = {
-    "1": "매도",
-    "2": "매수"
-}
-# 주문호가 구분코드
-dict_ho_div = {
-    "01": "보통",
-    "03": "시장가",
-    "05": "조건부지정가"
-}
-# 매수 매도를 위한 종목 코드
-dict_sell_info = {}
+    remain.Request(list_jongmok_cd)        
 
 
 # 매수, 매도
@@ -447,7 +437,7 @@ def order_stock(jongmok_cd, div, qty, prc, ho_div, jongmok_nm=""):
     result_tf = True
     list_jongmok_cd.append(jongmok_cd)
 
-    return result_tf    
+    return result_tf
 
 
 # 종목 추출 & 매수, 매도 처리
@@ -463,67 +453,25 @@ def order_buy(jongmok_cd, jongmok_nm, now_price):
         return True
     else:
         return False
-    
 
-if __name__ == "__main__":
 
-    # 시간 내에 매도를 못 했다면 시가 정리매도 진행
-    def sell_all_stokcs():
-        # 잔고 요청
-        get_buy_price()
-        # 보유한 주식 매도
-        for key, list_val in dict_sell_info.items():
-            if list_val[0] == 0: continue
-            try:
-                # 시장가 매도
-                order_stock(key, "1", list_val[0], 0, "03")
-            except Exception as e:
-                print("sell_all_stokcs Exception:", e)
+def buy_stock():
+    list_order = DB.query_data(extract_qry)
+    # 없으면 종료
+    if len(list_order) == 0:
+        return False
 
-    # 데이터 초기화
-    qry = "TRUNCATE TABLE naver_low_vs_rt"
-    DB.transaction_data(qry)
-    qry = "TRUNCATE TABLE naver_quant_high"
-    DB.transaction_data(qry)
-    qry = "TRUNCATE TABLE naver_sise_rising"
-    DB.transaction_data(qry)
-    ################################################################################################
-    # 매수하는 로직
-    ################################################################################################
-    while True:
-        now_tm = DU.get_now_datetime_string().split(" ")[1].replace(":","")
-        # 9시부터 30초 후에 최초 데이터 저장. 30분 동안만 처리
-        if now_tm < start_hms:
-            print(now_tm)
-            time.sleep(1)
-            continue
-        # 종료시간 확인
-        elif now_tm > end_hms:
-            break
-        # 매수작업
-        else:
-            # 급등 주 데이터 추출
-            make_sudden_rising()
-            # 매수 조건에 맞는 데이터 추출
-            list_rising = DB.query_data(extract_qry)
-            # 존재하면 매수
-            if len(list_rising) > 0:
-                # 매수 주문
-                for row in list_rising:
-                    jongmok_cd = row[0]
-                    jongmok_nm = row[1]
-                    now_price = row[2]
-                    order_buy(jongmok_cd, jongmok_nm, now_price)
-                break
-            # 15 초 대기 후 데이터 추출 및 매수 작업 다시 시작
-            time.sleep(15)
-    ################################################################################################
+    # 매수 주문
+    for row in list_order:
+        jongmok_cd = row[0]
+        jongmok_nm = row[1]
+        now_price = row[2]
+        order_buy(jongmok_cd, jongmok_nm, now_price)
 
     # 구매가 끝났으면 매도 진행. 바로 던지면 매수 전이라 매도 주문이 성사가 안됨
     time.sleep(5)
     # 잔고 요청
     get_buy_price()
-    
     print("#" * 50)
     print(dict_sell_info)
     print("#" * 50)
@@ -534,47 +482,100 @@ if __name__ == "__main__":
             order_stock(key, "1", list_val[0], list_val[1], "01")
         except Exception as e:
             print("dict_sell_info Exception:", e)
-    # 지정가에 매도를 못한 경우 시장가 매도를 위한 대기
-    while True:
-        now_tm = DU.get_now_datetime_string().split(" ")[1].replace(":","")
-        # 적재 지정시간과 잔고 정리 시간이 지나면 종료
-        if now_tm > clear_hms:
-            break
-        else:
-            print("잔고정리 대기 및 데이터 저장 중...", now_tm)
-            make_sudden_rising()
-        # 1분 단위로
-        time.sleep(60)
+            return False
 
-    # 미체결 리스트를 보관한 자료 구조체
-    diOrderList= dict()  # 미체결 내역 딕셔너리 - key: 주문번호, value - 미체결 레코드
-    orderList = []       # 미체결 내역 리스트 - 순차 조회 등을 위한 미체결 리스트
-    # 미체결 통신 object
-    obj = CREON.Cp5339()
-    diOrderList = {}
-    orderList = []
-    obj.Request5339(diOrderList, orderList)
-    # 미체결 목록
-    for item in orderList:
-        item.debugPrint()
-    print("#" * 50)
-    print("[Reqeust5339]미체결 개수 ", len(orderList))
-    print("#" * 50)    
-    # 주문 취소 통신 object
-    objOrder = CREON.CpRPOrder()
-    # 미체결 전체 취소
-    onums = []
-    codes = []
-    amounts = []
-    callback = None
-    for item in orderList :
-        onums.append(item.orderNum)
-        codes.append(item.code)
-        amounts.append(item.amount)
-    # 미체결 주문번호 개수만큼 취소요청
-    for i in range(len(onums)):
-        objOrder.BlockRequestCancel(onums[i], codes[i], amounts[i], callback)
-    # 잔고 정리시간이 됐으니 잔고가 있으면 시장가로 매도
-    sell_all_stokcs()
-    # 파일 종료
+    return True
+
+
+def execute(base_url):
+    list_gold = get_condition_data(base_url)
+    rnk = 0
+    qry_body = ""
+    for list_row in list_gold:
+        if len(list_row) != 11: continue
+        rnk += 1
+        # 포인트 계산
+        points = calc_rank_point(rnk)
+        qry_body += "('" + list_row[0] + "', '" + list_row[1] + "', " + list_row[2].replace(",","") + ", " + list_row[4].replace(",","").replace("%","").replace("+","") + ", " + list_row[5].replace(",","") + ", " + str(rnk) + ", " + str(points) + "),"
+    ins_qry = qry_head + qry_body
+    ins_qry = ins_qry[:len(ins_qry)-1]
+    
+    # 디비로 저장
+    try:
+        DB.transaction_data(ins_qry)
+    except Exception as e:
+        print("Insert Naver Data Exception:", e)
+        print("#"*100)
+        print(ins_qry)
+        print("#"*100)
+
+
+# 데이터 추출 후 매수 & 매도
+def get_data_buy_stock():
+    for url in list_condition:
+        execute(url)
+    # 급등주 추출 & 저장
+    get_sudden_rising()
+
+    return buy_stock()
+    
+
+if __name__ == "__main__":
+
+    while True:
+        now_tm = DU.get_now_datetime_string().split(" ")[1]
+        # 시작시간 대기
+        if now_tm.replace(":","") < start_hms:
+            print(now_tm)
+            time.sleep(1)
+            continue
+        else:
+            break
+
+    # 데이터 초기화
+    qry = "TRUNCATE TABLE naver_condition"
+    DB.transaction_data(qry)
+    # 실제 수행할 시분 목록
+    list_get_hm = [
+        "0904", "0905", "0906"
+    ]
+
+    # for url in list_condition:
+    #     execute(url)
+    # # 급등주 추출 & 저장
+    # get_sudden_rising()
+    # exit()
+
+    # 매수매도를 성공했으면 빠져나가기 위한 플래그
+    buy_tf = False
+    # 지정한 시분 횟수만큼 수행
+    for hm in list_get_hm:
+        if buy_tf == True: break
+        while True:
+            now_tm = DU.get_now_datetime_string().split(" ")[1].replace(":","")[:4]
+            # 지정한 시분에만 추출
+            if hm == now_tm:
+                buy_tf = get_data_buy_stock()
+                break
+            else:
+                print("데이터 추출 대기...", DU.get_now_datetime_string())
+                time.sleep(5)
+    # 최초 지정한 시분 횟수에서 매수매도를 못한 경우 90초 대기 후 한 번 재시도
+    if buy_tf == False:
+        print("최초 매수를 위한 조건에 맞는 데이터가 없었음")
+        # 90초 대기
+        idx = 0
+        while True:
+            idx += 1
+            if idx > 90: break
+            time.sleep(1)
+            print("90초 대기: ", DU.get_now_datetime_string())
+        # 데이터 추출 및 거래
+        if get_data_buy_stock() == False:            
+            print("두번째도 매수를 위한 조건에 맞는 데이터가 없었음")
+        else:
+            print("두번째에서 매수 & 매도 정상 종료!!")
+    else:
+        print("최초 매수 & 매도 정상 종료!!")
+    
     txt_file.close()
