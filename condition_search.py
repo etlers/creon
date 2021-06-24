@@ -43,7 +43,7 @@ vol = query_param["vol"]
 # 기본 금액
 base_amount = dict_quant["base_amount"]
 
-# 골든크로스. 단기(20일) 이동평균선이 장기(60일) 이동평균선을 돌파하는 경우의 종
+# 골든크로스. 단기(20일) 이동평균선이 장기(60일) 이동평균선을 돌파하는 경우의 종목
 url_gold = "https://finance.naver.com/sise/item_gold.nhn"
 # 갭상승. 갭상승 종목중에서 전일 고가보다 당일 저가가 높은 종
 url_gap = "https://finance.naver.com/sise/item_gap.nhn"
@@ -52,17 +52,20 @@ url_igyuk = "https://finance.naver.com/sise/item_igyuk.nhn"
 # 상대강도과열. 14일의 상승폭 합/(14 일의 상승폭 합+하락폭 합)의 비율이며 그 비율이 80%이상 일 경우의 종목
 url_overheat = "https://finance.naver.com/sise/item_overheating_2.nhn"
 # 데이터 추출 URL
-list_condition = [
+list_condition_url = [
     url_igyuk, url_overheat, url_gap, url_gold
 ]
+# 거래량 급증
 list_quant_high_url = [
     url_param["sise_quant_high"]["kospi"],
     url_param["sise_quant_high"]["kosdak"]
 ]
+# 저가대비 급등
 list_low_up_url = [
     url_param["sise_low_up"]["kospi"],
     url_param["sise_low_up"]["kosdak"]
 ]
+# 전일대비 상승
 list_sise_url = [
     url_param["sise_rising"]["kospi"],
     url_param["sise_rising"]["kosdak"]
@@ -85,29 +88,34 @@ dict_ho_div = {
 dict_sell_info = {}
 
 qry_head = """
-insert into naver_condition
-(jongmok_cd, jongmok_nm, prc, up_rt, vol, rnk, points)
-values
+INSERT INTO naver_condition
+(JONGMOK_CD, JONGMOK_NM, PRC, UP_RT, VOL, RNK, POINTS)
+VALUES
 """
-
 extract_qry = """
 SELECT JONGMOK_CD
      , JONGMOK_NM
-     , PRC
+	 , PRC
+	 , UP_RT
+	 , VOL
+	 , RNK
+	 , POINTS
   FROM (SELECT JONGMOK_CD
-		     , JONGMOK_NM
-		     , MAX(PRC) AS PRC
-		     , SUM(VOL) AS VOL
-		     , SUM(POINTS) AS POINTS
-		     , COUNT(*) AS CNT
-		  FROM naver_condition
-		 WHERE 1 = 1
-           AND PRC BETWEEN 5000 AND 25000
-           AND VOL BETWEEN 150000 AND 300000
-		   AND UP_RT BETWEEN 1.0 AND 2.5
-		 GROUP BY JONGMOK_CD
-		HAVING COUNT(*) > 1) T1
- ORDER BY POINTS DESC, VOL DESC, PRC
+             , MAX(JONGMOK_NM) AS JONGMOK_NM
+             , MAX(PRC) AS PRC
+             , ROUND(AVG(UP_RT), 2) AS UP_RT
+             , MAX(VOL) AS VOL
+             , ROUND(AVG(RNK), 2) AS RNK
+             , ROUND(AVG(POINTS), 2) AS POINTS
+          FROM NAVER_CONDITION
+         WHERE 1 = 1
+           AND UP_RT > 0.5
+         GROUP BY JONGMOK_CD) TT
+ WHERE 1= 1
+   AND VOL > 1000000
+   AND PRC BETWEEN 5000 AND 25000
+   AND UP_RT BETWEEN 0.5 AND 3.0
+ ORDER BY RNK, UP_RT DESC
  LIMIT 3
 """
 
@@ -341,9 +349,9 @@ def get_sudden_rising():
 
     # 저가대비 급등
     save_low_up_data()
-    # 거래량 급증
+    # # 거래량 급증
     save_quant_high_data()
-    # 시세 급등
+    # # 시세 급등
     save_sise_rising()
 
 def get_condition_data(base_url):
@@ -512,11 +520,13 @@ def execute(base_url):
 
 # 데이터 추출 후 매수 & 매도
 def get_data_buy_stock():
-    for url in list_condition:
+    # 조건검색 추출 & 저장
+    for url in list_condition_url:
         execute(url)
     # 급등주 추출 & 저장
     get_sudden_rising()
 
+    # 매수 & 매도
     return buy_stock()
     
 
@@ -526,7 +536,7 @@ if __name__ == "__main__":
         now_tm = DU.get_now_datetime_string().split(" ")[1]
         # 시작시간 대기
         if now_tm.replace(":","") < start_hms:
-            print(now_tm)
+            print("시작대기: ", DU.get_now_datetime_string())
             time.sleep(1)
             continue
         else:
@@ -535,17 +545,17 @@ if __name__ == "__main__":
     # 데이터 초기화
     qry = "TRUNCATE TABLE naver_condition"
     DB.transaction_data(qry)
-    # 실제 수행할 시분 목록
-    list_get_hm = [
-        "0904", "0905", "0906"
-    ]
-
-    # for url in list_condition:
+    
+    # for url in list_condition_url:
     #     execute(url)
     # # 급등주 추출 & 저장
     # get_sudden_rising()
     # exit()
 
+    # 실제 수행할 시분 목록
+    list_get_hm = [
+        "0903", "0904", "0905"
+    ]
     # 매수매도를 성공했으면 빠져나가기 위한 플래그
     buy_tf = False
     # 지정한 시분 횟수만큼 수행
@@ -556,6 +566,8 @@ if __name__ == "__main__":
             # 지정한 시분에만 추출
             if hm == now_tm:
                 buy_tf = get_data_buy_stock()
+                if buy_tf == False:
+                    print(f"{hm}] 매수를 위한 조건에 맞는 데이터가 없었음")
                 break
             else:
                 print("데이터 추출 대기...", DU.get_now_datetime_string())

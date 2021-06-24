@@ -2,7 +2,6 @@ from os import remove
 import requests
 from bs4 import BeautifulSoup as bs
 import time, sys, yaml
-import quick_news as NEWS
 
 sys.path.append("C:/Users/etlers/Documents/project/python/common")
 
@@ -51,9 +50,9 @@ list_sise_url = [
 ]
 
 qry_head = """
-insert into naver_condition_simul
-(ins_dtm, jongmok_cd, jongmok_nm, prc, up_rt, vol, rnk, points)
-values
+INSERT INTO naver_condition_simul
+(INS_DTM, JONGMOK_CD, JONGMOK_NM, PRC, UP_RT, VOL, RNK, POINTS)
+VALUES
 """
 
 
@@ -274,7 +273,8 @@ if __name__ == "__main__":
         now_tm = DU.get_now_datetime_string().split(" ")[1].replace(":","")
         # 9시 3분부터 30분까지만 데이터 적재
         if now_tm < "090300":
-            print(now_tm)
+            print("시작대기: ", DU.get_now_datetime_string())
+            time.sleep(1)
             continue
         elif now_tm > "093000":
             break
@@ -287,5 +287,5 @@ if __name__ == "__main__":
             get_sudden_rising(ins_dtm)
 
         time.sleep(1)
-        print(now_tm)
+        print("추출대기: ", DU.get_now_datetime_string())
         pre_hm = now_tm[:4]
