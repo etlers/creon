@@ -1,9 +1,7 @@
-from os import remove
 import requests
 from bs4 import BeautifulSoup as bs
 import time, sys, yaml
 import win32com.client
-import quick_news as NEWS
 
 sys.path.append("C:/Users/etlers/Documents/project/python/common")
 
@@ -93,29 +91,18 @@ INSERT INTO naver_condition
 VALUES
 """
 extract_qry = """
-SELECT JONGMOK_CD
+SELECT DISTINCT
+       JONGMOK_CD
      , JONGMOK_NM
-	 , PRC
-	 , UP_RT
-	 , VOL
-	 , RNK
-	 , POINTS
-  FROM (SELECT JONGMOK_CD
-             , MAX(JONGMOK_NM) AS JONGMOK_NM
-             , MAX(PRC) AS PRC
-             , ROUND(AVG(UP_RT), 2) AS UP_RT
-             , MAX(VOL) AS VOL
-             , ROUND(AVG(RNK), 2) AS RNK
-             , ROUND(AVG(POINTS), 2) AS POINTS
-          FROM NAVER_CONDITION
-         WHERE 1 = 1
-           AND UP_RT BETWEEN 0.0 AND 2.5
-         GROUP BY JONGMOK_CD) TT
- WHERE 1= 1
+     , END_PRC
+  FROM naver_news
+ WHERE 1 = 1
+   AND POS_CNT > NEG_CNT
+   AND NEG_CNT = 0
+   AND HIGH_RT < 95
    AND VOL > 500000
-   AND PRC BETWEEN 5000 AND 20000
-   AND UP_RT > 1.5
- ORDER BY RNK, UP_RT DESC
+   AND END_PRC < 100000
+ ORDER BY POS_CNT DESC, VOL DESC
  LIMIT 3
 """
 
@@ -140,7 +127,7 @@ class Cp6033:
         self.objRq.SetInputValue(2, 50)  #  요청 건수(최대 50)
 
         # 뉴스 속보
-        self.list_quick_news = NEWS.get_quick_news()
+        # self.list_quick_news = NEWS.get_quick_news()
  
     # 실제적인 6033 통신 처리
     def rq6033(self, retcode):
@@ -179,11 +166,11 @@ class Cp6033:
                 prc = int(buyPrice)
                 # 매도이익 설정을 위한 저장. 기본 2.5% 수익률 지정
                 prc = int(int(prc * 1.025) / 10) * 10
-                for headline in self.list_quick_news:
-                    # 뉴스에 있다면 3.5%
-                    if name in headline:
-                        prc = int(int(prc * 1.035) / 10) * 10
-                        break
+                # for headline in self.list_quick_news:
+                #     # 뉴스에 있다면 3.5%
+                #     if name in headline:
+                #         prc = int(int(prc * 1.035) / 10) * 10
+                #         break
                 # 딕셔너리에 저장
                 dict_sell_info[code] = [int(amount), prc]
                 ###################################################################################
@@ -463,7 +450,7 @@ def order_buy(jongmok_cd, jongmok_nm, now_price):
         return False
 
 
-def buy_stock():
+def execute():
     list_order = DB.query_data(extract_qry)
     # 없으면 종료
     if len(list_order) == 0:
@@ -495,41 +482,6 @@ def buy_stock():
             return False
 
     return True
-
-
-def execute(base_url):
-    list_gold = get_condition_data(base_url)
-    rnk = 0
-    qry_body = ""
-    for list_row in list_gold:
-        if len(list_row) != 11: continue
-        rnk += 1
-        # 포인트 계산
-        points = calc_rank_point(rnk)
-        qry_body += "('" + list_row[0] + "', '" + list_row[1] + "', " + list_row[2].replace(",","") + ", " + list_row[4].replace(",","").replace("%","").replace("+","") + ", " + list_row[5].replace(",","") + ", " + str(rnk) + ", " + str(points) + "),"
-    ins_qry = qry_head + qry_body
-    ins_qry = ins_qry[:len(ins_qry)-1]
-    
-    # 디비로 저장
-    try:
-        DB.transaction_data(ins_qry)
-    except Exception as e:
-        print("Insert Naver Data Exception:", e)
-        print("#"*100)
-        print(ins_qry)
-        print("#"*100)
-
-
-# 데이터 추출 후 매수 & 매도
-def get_data_buy_stock():
-    # 조건검색 추출 & 저장
-    for url in list_condition_url:
-        execute(url)
-    # 급등주 추출 & 저장
-    get_sudden_rising()
-
-    # 매수 & 매도
-    return buy_stock()
     
 
 if __name__ == "__main__":
@@ -544,52 +496,8 @@ if __name__ == "__main__":
         else:
             break
 
-    # 데이터 초기화
-    qry = "TRUNCATE TABLE naver_condition"
-    DB.transaction_data(qry)
-    
-    # for url in list_condition_url:
-    #     execute(url)
-    # # 급등주 추출 & 저장
-    # get_sudden_rising()
-    # exit()
-
-    # 실제 수행할 시분 목록
-    list_get_hm = [
-        "0925", "0926", "0927"
-    ]
-    # 매수매도를 성공했으면 빠져나가기 위한 플래그
-    buy_tf = False
-    # 지정한 시분 횟수만큼 수행
-    for hm in list_get_hm:
-        if buy_tf == True: break
-        while True:
-            now_tm = DU.get_now_datetime_string().split(" ")[1].replace(":","")[:4]
-            # 지정한 시분에만 추출
-            if hm == now_tm:
-                buy_tf = get_data_buy_stock()
-                if buy_tf == False:
-                    print(f"{hm}] 매수를 위한 조건에 맞는 데이터가 없었음")
-                break
-            else:
-                print("데이터 추출 대기...", DU.get_now_datetime_string())
-                time.sleep(5)
-    # 최초 지정한 시분 횟수에서 매수매도를 못한 경우 90초 대기 후 한 번 재시도
+    buy_tf = execute()
     if buy_tf == False:
-        print("최초 매수를 위한 조건에 맞는 데이터가 없었음")
-        # 90초 대기
-        idx = 0
-        while True:
-            idx += 1
-            if idx > 90: break
-            time.sleep(1)
-            print("90초 대기: ", DU.get_now_datetime_string())
-        # 데이터 추출 및 거래
-        if get_data_buy_stock() == False:            
-            print("두번째도 매수를 위한 조건에 맞는 데이터가 없었음")
-        else:
-            print("두번째에서 매수 & 매도 정상 종료!!")
-    else:
-        print("최초 매수 & 매도 정상 종료!!")
+        print("매수를 위한 조건에 맞는 데이터가 없었음")
     
     txt_file.close()

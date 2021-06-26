@@ -67,8 +67,6 @@ SELECT JONGMOK_CD
            AND PRE2_PRC > PRE3_PRC AND PRE1_PRC > PRE2_PRC AND PRC > PRE1_PRC
 		   AND PRE2_VOL > PRE3_VOL AND PRE1_VOL > PRE2_VOL AND VOL > PRE1_VOL) TT
  WHERE 1 = 1
-   AND GAP_PRC_RT > {gap_prc_rt}
-   AND GAP_VOL_RT > {gap_vol_rt}
  ORDER BY GAP_PRC_RT DESC, GAP_VOL_RT DESC
  LIMIT 3
 """
@@ -384,7 +382,12 @@ class Cp7043:
  
     # 실제적인 7043 통신 처리
     def rq7043(self, retcode):
-        self.objRq.BlockRequest()
+        while True:
+            try:
+                self.objRq.BlockRequest()
+                break
+            except:
+                time.sleep(1)
         # 현재가 통신 및 통신 에러 처리
         rqStatus = self.objRq.GetDibStatus()
         rqRet = self.objRq.GetDibMsg1()
@@ -476,10 +479,15 @@ class CpMarketEye:
             body += f"('{list_val[0]}','{now_tm.zfill(6)}',{list_val[2]},{list_val[3]},{list_val[4]},{list_val[5]},'{list_val[6]}','{str(list_val[1]).zfill(4)}'),"
         # 최종 쿼리
         qry = header + "\n" + body[:len(body)-1]
-        # 데이터 디비로 저장
-        DB.transaction_data(qry)
-        print(qry)
-        print("Save Data:", DU.get_now_datetime_string())
+        # 디비로 저장
+        try:
+            DB.transaction_data(qry)
+            print("Save Data:", DU.get_now_datetime_string())
+        except Exception as e:
+            print("Insert Creon Quant Data Exception:", e)
+            print("#"*100)
+            print(qry)
+            print("#"*100)
         
         return True
 
@@ -595,11 +603,17 @@ class Cp6033:
                 ###################################################################################
                 prc = int(buyPrice)
                 # 매도이익 설정을 위한 저장. 기본 3% 수익률 지정
-                prc = int(int(prc * 1.030) / 10) * 10
+                if prc > 99999:
+                    prc = int(int(prc * 1.025) / 100) * 100
+                else:
+                    prc = int(int(prc * 1.025) / 10) * 10
                 for headline in self.list_quick_news:
                     # 뉴스에 있다면 4.5%
                     if name in headline:
-                        prc = int(int(prc * 1.045) / 10) * 10
+                        if prc > 99999:
+                            prc = int(int(prc * 1.030) / 100) * 100
+                        else:
+                            prc = int(int(prc * 1.030) / 10) * 10
                         break
                 # 딕셔너리에 저장
                 dict_sell_info[code] = [int(amount), prc]
@@ -716,17 +730,15 @@ def process_func():
             print("list_extract_data Exception:", e)
 
     # 구매가 끝났으면 매도 진행. 바로 던지면 매수 전이라 매도 주문이 성사가 안됨
-    time.sleep(5)
+    time.sleep(10)
     # 잔고 요청
     get_buy_price()
-    print("#" * 50)
-    print(dict_sell_info)
-    print("#" * 50)
     # 보유한 주식 매도
-    for key, list_val in dict_sell_info.items():
+    for key, list_val in dict_sell_info.items():        
         if list_val[0] == 0: continue
         try:
             order_stock(key, "1", list_val[0], list_val[1], "01")
+            time.sleep(0.5)
         except Exception as e:
             print("dict_sell_info Exception:", e)
     
@@ -735,19 +747,16 @@ def process_func():
 
 # 프로그램 시작
 if __name__ == "__main__":
-
-    # 시간 내에 매도를 못 했다면 시가 정리매도 진행
-    def sell_all_stokcs():
-        # 잔고 요청
-        get_buy_price()
-        # 보유한 주식 매도
-        for key, list_val in dict_sell_info.items():
-            try:
-                # 시장가 매도
-                order_stock(key, "1", list_val[0], 0, "03")
-            except Exception as e:
-                print("sell_all_stokcs Exception:", e)
-        
+    # 시작 시간 체크
+    while True:
+        now_tm = DU.get_now_datetime_string().split(" ")[1]
+        # 시작시간 대기
+        if now_tm.replace(":","") < start_hms:
+            print("시작대기: ", DU.get_now_datetime_string())
+            time.sleep(1)
+            continue
+        else:
+            break
     # 뉴스속보 추출여부
     quick_news_tf = False
     # 상승률 200 객체 생성
@@ -755,79 +764,28 @@ if __name__ == "__main__":
     # 데이터 초기화
     qry = "TRUNCATE TABLE creon_quant"
     DB.transaction_data(qry)
-
-    idx = 0
+    # 매수매도를 성공했으면 빠져나가기 위한 플래그
+    buy_tf = False
+    # 작업 확인을 위한 시분
+    pre_hm = DU.get_now_datetime_string().split(" ")[1].replace(":","")[:4]
+    hm = DU.get_now_datetime_string().split(" ")[1].replace(":","")[:4]
+    # 지정한 시분 횟수만큼 수행        
     while True:
-        now_tm = DU.get_now_datetime_string().split(" ")[1].replace(":","")
-        # 9시부터 10초 후에 최초 데이터 저장. 30분 동안만 처리
-        if now_tm < start_hms:
-            print(now_tm)
-            time.sleep(1)
-            continue
-        elif now_tm > end_hms:
-            break
-        # 상승률 200 데이터 저장
+        if buy_tf == True: break
         while True:
-            # 최대 10회까지 요청을 해봄
-            if idx > 10: break
-            try:
+            # 지정한 시분에만 추출
+            if (hm != pre_hm):
                 quant.get_quant_data()
+                buy_tf = process_func()
+                if buy_tf == False:
+                    print(f"{hm}] 매수를 위한 조건에 맞는 데이터가 없었음")
+                    hm = pre_hm
+                    time.sleep(30)
                 break
-            except:
-                idx += 1
-                time.sleep(1)
-        # 세번째 데이터부터 매수를 위한 로직 수행
-        if process_func():
-            print("매수, 매도 종료")
-            break
-        # 대기
-        time.sleep(9)
-
-    # 종료 후에도 데이터는 지정한 시간까지 저장
-    print("지정시간 데이터 저장 시작")
-    while True:
-        now_tm = DU.get_now_datetime_string().split(" ")[1].replace(":","")
-        # 적재 지정시간과 잔고 정리 시간이 지나면 종료
-        if (now_tm > until_hms and now_tm > clear_hms):
-            break
-        # 적재 지정시간이 남았으면 상승률 200 데이터 저장
-        if now_tm < until_hms:
-            quant.get_quant_data()
-        else:
-            print("잔고정리 대기 중...", now_tm)
-        # 1분 단위로
-        time.sleep(60)
-
-    # 미체결 리스트를 보관한 자료 구조체
-    diOrderList= dict()  # 미체결 내역 딕셔너리 - key: 주문번호, value - 미체결 레코드
-    orderList = []       # 미체결 내역 리스트 - 순차 조회 등을 위한 미체결 리스트
-    # 미체결 통신 object
-    obj = Cp5339()
-    diOrderList = {}
-    orderList = []
-    obj.Request5339(diOrderList, orderList)
-    # 미체결 목록
-    for item in orderList:
-        item.debugPrint()
-    print("#" * 50)
-    print("[Reqeust5339]미체결 개수 ", len(orderList))
-    print("#" * 50)    
-    # 주문 취소 통신 object
-    objOrder = CpRPOrder()
-    # 미체결 전체 취소
-    onums = []
-    codes = []
-    amounts = []
-    callback = None
-    for item in orderList :
-        onums.append(item.orderNum)
-        codes.append(item.code)
-        amounts.append(item.amount)
-    # 미체결 주문번호 개수만큼 취소요청
-    for i in range(len(onums)):
-        objOrder.BlockRequestCancel(onums[i], codes[i], amounts[i], callback)
-
-    # 잔고 정리시간이 됐으니 잔고가 있으면 시장가로 매도
-    sell_all_stokcs()
+            else:
+                print("데이터 추출 대기...", DU.get_now_datetime_string())
+                time.sleep(5)
+            # 비교를 위한 이전시간 저장
+            pre_hm = DU.get_now_datetime_string().split(" ")[1].replace(":","")[:4]
     # 파일 종료
     txt_file.close()
