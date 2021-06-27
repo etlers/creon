@@ -23,6 +23,7 @@ query_param:
   gap_prc_rt: 1.0
   gap_vol_rt: 10.0
   vol: 500000
+  limit: 5
 
 hms_param:
   start_hms: "090030"

@@ -42,6 +42,7 @@ gap_prc_rt = query_param["gap_prc_rt"]
 gap_vol_rt = query_param["gap_vol_rt"]
 roe = query_param["roe"]
 vol = query_param["vol"]
+limit = query_param["limit"]
 # 기본 금액
 base_amount = dict_quant["base_amount"]
 
@@ -94,7 +95,7 @@ INSERT INTO naver_condition
 (JONGMOK_CD, JONGMOK_NM, PRC, UP_RT, VOL, RNK, POINTS)
 VALUES
 """
-extract_qry = """
+extract_qry = f"""
 WITH T2 AS (
 SELECT JONGMOK_CD
      , SUM(POS_CNT) - SUM(NEG_CNT) AS GAP_CNT
@@ -112,9 +113,10 @@ SELECT DISTINCT
     ON T2.JONGMOK_CD = T1.JONGMOK_CD
    AND T2.GAP_CNT > 0
  WHERE 1 = 1   
-   AND T1.END_PRC BETWEEN 3500 AND 100000
+   AND T1.END_PRC >= 5000
+   AND T1.HIGH_RT < 97.1
  ORDER BY T2.GAP_CNT DESC, T2.IN_CNT DESC, T1.HIGH_RT, T1.VOL DESC
- LIMIT 5
+ LIMIT {limit}
 """
 
 
@@ -175,10 +177,10 @@ class Cp6033:
                 # 매도이익 설정을 위한 저장. 기본 3% 수익률 지정
                 # 1만원 미만은 10원 단위
                 if buyPrice < 10000:
-                    prc = int(int(prc * 1.03) / 10) * 10
+                    prc = int(int(prc * 1.031) / 10) * 10
                 # 나머지는 100원 단위로
                 else:
-                    prc = int(int(prc * 1.03) / 100) * 100
+                    prc = int(int(prc * 1.031) / 100) * 100
                 # 딕셔너리에 저장
                 dict_sell_info[code] = [int(amount), prc]
                 ###################################################################################

@@ -134,11 +134,12 @@ def get_prc_vol(cd):
 list_pos = [
     "부각","저평가","추천","매력","실적개선","러브콜","수익성개선","수익증대","실적지속","훨훨","강세","자금몰려","강력매수","계약체결","급등세","사업공급",
     "목표가↑","기대감↑","수혜","연속상한가","뚫었다","수주확대","단독공급","사용승인","사용허가","사업진출","특허취득","MOA체결","비중확대","호실적","회복",
-    "허가획득","최초","상수상","특허출원","매수몰려","특허취득","우선협상대상자","상승인","돌파","약진","본격화","흑자전환","성장중","사자"
+    "허가획득","최초","상수상","특허출원","매수몰려","특허취득","우선협상대상자","상승인","돌파","약진","본격화","흑자전환","성장중","사자","공급계약","상향",
+    "고성장","순매수"
 ]
 list_neg = [
     "그랬을까","고평가","하락","보류","손실증가","부진","미끄럼","저하","우려","약세","?","와르르","하향","없어","약세","가능성확인","부담","악화",
-    "사유추가발생","정지","우려","꼴지","마이너스","팔자"
+    "사유추가발생","정지","우려","꼴지","마이너스","팔자","요구","순매도","정지"
 ]
 # 긍정, 부정 개수
 def get_pos_neg_cnt(row):
@@ -155,7 +156,8 @@ def get_pos_neg_cnt(row):
 
 # 종목명 존재여부
 def match_full_name(row, nm):
-    row = row.replace('"','').replace(","," ").replace("…"," ").replace("...", " ").replace("·"," ")
+    row = row.replace('"','').replace(","," ").replace("…"," ").replace("...", " ").replace("·"," ").replace("'"," ")
+    row = row.replace('의 ','').replace('는 ','').replace('이 ','').replace('가 ','').replace('를 ','').replace('을 ','')
     list_word = row.split(" ")
     for word in list_word:
         if nm == word:
@@ -277,7 +279,7 @@ def make_result_list_by_news():
             desc = get_detail(list_detail[2], list_detail[1])
             list_line.append(list_detail[0])
             list_line.append(list_detail[1])
-            desc = list_detail[3] + " " + desc.replace("\xa0","").replace("\n"," ")
+            desc = list_detail[1] + " " + list_detail[3] + " " + desc.replace("\xa0","").replace("\n"," ")
             list_line.append(desc.replace('amp;','').replace("..",""))
             list_result.append(list_line)
             list_line = []        
