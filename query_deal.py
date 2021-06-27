@@ -1,3 +1,6 @@
+"""
+    쿼리를 읽어 조건에 맞는 데이터가 존재하면 매수 & 매도 처리를 한다
+"""
 import requests
 from bs4 import BeautifulSoup as bs
 import time, sys, yaml
@@ -103,17 +106,15 @@ SELECT DISTINCT
        T1.JONGMOK_CD
      , T1.JONGMOK_NM
      , T1.END_PRC
-     , T2.GAP_CNT, T2.IN_CNT
+     , T2.GAP_CNT, T2.IN_CNT, T1.HIGH_RT, T1.HIGH_PRC, T1.VOL
   FROM naver_news T1
  INNER JOIN T2
     ON T2.JONGMOK_CD = T1.JONGMOK_CD
    AND T2.GAP_CNT > 0
  WHERE 1 = 1   
-   AND T1.NEG_CNT = 0
-   AND T1.HIGH_RT < 97.1
    AND T1.END_PRC BETWEEN 3500 AND 100000
- ORDER BY T2.GAP_CNT DESC, T1.HIGH_RT, T1.END_PRC, T1.VOL DESC
- LIMIT 3
+ ORDER BY T2.GAP_CNT DESC, T2.IN_CNT DESC, T1.HIGH_RT, T1.VOL DESC
+ LIMIT 5
 """
 
 
@@ -171,8 +172,13 @@ class Cp6033:
                 # 수익률 10원 단위로 매도하기 위한 매수가격 추출 및 매도가격 설정
                 ###################################################################################
                 prc = int(buyPrice)
-                # 매도이익 설정을 위한 저장. 기본 2.5% 수익률 지정
-                prc = int(int(prc * 1.03) / 10) * 10
+                # 매도이익 설정을 위한 저장. 기본 3% 수익률 지정
+                # 1만원 미만은 10원 단위
+                if buyPrice < 10000:
+                    prc = int(int(prc * 1.03) / 10) * 10
+                # 나머지는 100원 단위로
+                else:
+                    prc = int(int(prc * 1.03) / 100) * 100
                 # 딕셔너리에 저장
                 dict_sell_info[code] = [int(amount), prc]
                 ###################################################################################
@@ -288,8 +294,8 @@ def order_buy(jongmok_cd, jongmok_nm, now_price):
     # 계산한 매수량
     buy_ea = int(base_amount / base_price)
     # 한 종목에 최대 100주
-    if buy_ea > 100:
-        buy_ea = 100
+    if buy_ea > 50:
+        buy_ea = 50
     # 시장가 매수
     try:
         order_stock(jongmok_cd, "2", buy_ea, 0, "03", jongmok_nm)
@@ -338,7 +344,7 @@ if __name__ == "__main__":
     while True:
         now_tm = DU.get_now_datetime_string().split(" ")[1]
         # 시작시간 대기
-        if now_tm.replace(":","") < start_hms:
+        if now_tm.replace(":","") < "085900":
             print("시작대기: ", DU.get_now_datetime_string())
             time.sleep(1)
             continue
@@ -350,6 +356,7 @@ if __name__ == "__main__":
         NEWS.execute()
         # 로직 시작. 매수, 매도 잘 했으면 종료
         if execute():
+            print("매수 & 매도 처리 완료!!")
             break
         # 메세지 찍고 대기 후 다시 뉴스 생성부터 시작
         else:

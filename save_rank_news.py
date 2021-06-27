@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup as bs
 import yaml
 import sys
 import time
+# import pandas as pd
 
 sys.path.append("C:/Users/etlers/Documents/project/python/common")
 
@@ -38,7 +39,7 @@ def make_get_url():
     # 나머지는 전일만
     else:
         list_date.append(DU.get_before_datetime(DU.get_now_datetime_string(), days=1).split(" ")[0])
-    
+    print(list_date)
     for date in list_date:
         for page in range(10):
             list_url.append(f"https://finance.naver.com/news/news_list.nhn?mode=RANK&date={date}&page={page+1}")
@@ -133,11 +134,11 @@ def get_prc_vol(cd):
 list_pos = [
     "부각","저평가","추천","매력","실적개선","러브콜","수익성개선","수익증대","실적지속","훨훨","강세","자금몰려","강력매수","계약체결","급등세","사업공급",
     "목표가↑","기대감↑","수혜","연속상한가","뚫었다","수주확대","단독공급","사용승인","사용허가","사업진출","특허취득","MOA체결","비중확대","호실적","회복",
-    "허가획득","최초","상수상","특허출원","매수몰려","특허취득","우선협상대상자","상승인","돌파","약진","본격화"
+    "허가획득","최초","상수상","특허출원","매수몰려","특허취득","우선협상대상자","상승인","돌파","약진","본격화","흑자전환","성장중","사자"
 ]
 list_neg = [
     "그랬을까","고평가","하락","보류","손실증가","부진","미끄럼","저하","우려","약세","?","와르르","하향","없어","약세","가능성확인","부담","악화",
-    "사유추가발생","정지","우려","꼴지"
+    "사유추가발생","정지","우려","꼴지","마이너스","팔자"
 ]
 # 긍정, 부정 개수
 def get_pos_neg_cnt(row):
@@ -185,7 +186,7 @@ def make_result_list_by_news():
 
                 list_day_news.append(head_line[1:].replace("&quot;","").replace("</a>","").replace("&amp;","&").split('">')[0])
 
-        list_result.append(list(set(list_day_news)))
+        list_result.append(list(set(list_day_news)))        
 
 
     # 장중특징주
@@ -212,15 +213,88 @@ def make_result_list_by_news():
                     if wdate < list_date[len(list_date)-1]:                
                         end_tf = True
                         break
-        list_result.append(list(set(list_special_news)))
+        list_result.append(list(set(list_special_news)))        
+
+    # 리서치 보고서
+    def get_research():
+
+        def get_detail_div(base_url, nm):
+            response = requests.get( base_url, headers={"User-agent": "Mozilla/5.0"} )
+            soup = bs(response.text, 'html.parser')
+            desc = ""
+
+            print(nm)
+            for row in soup.find("table",{"summary":"종목분석 리포트 본문내용"}).find_all("div"):
+                line = str(row)
+                if 'div style' not in line: continue
+                try:
+                    desc += line.split("<b>")[1]
+                except:
+                    print(line)
+            print(desc)
+
+            return desc
+
+        def get_detail(base_url, nm):
+            response = requests.get( base_url, headers={"User-agent": "Mozilla/5.0"} )
+            soup = bs(response.text, 'html.parser')
+            desc = ""
+            for row in soup.find("table",{"summary":"종목분석 리포트 본문내용"}).find_all("p"):
+                line = str(row)
+                if '<p class="source">' in line:
+                    continue
+                desc += line.replace("<p>","").replace("</p>","").replace("<strong>","").replace("</strong>","").replace("<br/>","") + "\n"
+            return desc
+
+        base_url = f"https://finance.naver.com/research/company_list.nhn"
+        response = requests.get( base_url, headers={"User-agent": "Mozilla/5.0"} )
+        soup = bs(response.text, 'html.parser')
+        idx = 0
+
+        list_cols = ["JONGMOK_CD", "JONGMOK_NM", "HREF", "TITLE"]
+        list_headline = []
+        list_line = []
+        for row in soup.find("table",{"summary":"종목분석 리포트 게시판 글목록"}).find_all("td"):
+            line = str(row)
+            if 'class="file"' in line: continue
+            if "stock_item" in line:
+                cd = "A" + line.split("code=")[1].split(" ")[0].replace('"',"")
+                nm = line.split("title=")[1].split(">")[0].replace("</a>","").replace('"',"")
+                list_line.append(cd)
+                list_line.append(nm)
+            elif "href" in line:
+                href = 'https://finance.naver.com/research/' + line.split("href=")[1].split(">")[0].replace("amp;","").replace('"',"")
+                title = line.split("href=")[1].split(">")[1].replace("</a></td>","").replace("</a","")
+                list_line.append(href)
+                list_line.append(title)
+                list_headline.append(list_line)
+                list_line = []
+            else:
+                continue
+        
+        list_line = []
+        for list_detail in list_headline:
+            desc = get_detail(list_detail[2], list_detail[1])
+            list_line.append(list_detail[0])
+            list_line.append(list_detail[1])
+            desc = list_detail[3] + " " + desc.replace("\xa0","").replace("\n"," ")
+            list_line.append(desc.replace('amp;','').replace("..",""))
+            list_result.append(list_line)
+            list_line = []        
+
 
     # 뉴스 URL 생성
     make_get_url()
     for url in list_url:
         # 전체 URL 생성
         get_rank_news(url.replace("-",""))
+    print(DU.get_now_datetime_string(), "많이본 뉴스 생성 완료!!")
     # 장중 특징주
     get_special_news()
+    print(DU.get_now_datetime_string(), "장중 특징주 생성 완료!!")
+    # 리서치 보고서
+    get_research()
+    print(DU.get_now_datetime_string(), "리서치 보고서 생성 완료!!")
 
 
 # 실행
@@ -250,8 +324,8 @@ def execute():
                         list_select.append(high_rt)
                         list_select.append(high_prc)
                         list_select.append(low_prc)
-                        gap_75 = int(int((high_prc - low_prc) * 0.85 + low_prc) / 10) * 10
-                        list_select.append(gap_75)
+                        gap_85 = int(int((high_prc - low_prc) * 0.85 + low_prc) / 10) * 10
+                        list_select.append(gap_85)
                         list_select.append(avg_vol)
                         list_whole.append(list_select)
 
@@ -304,6 +378,8 @@ def execute():
         print("#"*100)
         print(ins_qry)
         print("#"*100)
+    
+    print(DU.get_now_datetime_string(), "뉴스 데이터 저장 완료!!")
 
 
 if __name__ == "__main__":
