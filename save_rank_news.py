@@ -1,7 +1,8 @@
 import requests
 from bs4 import BeautifulSoup as bs
-import pandas as pd
+import yaml
 import sys
+import time
 
 sys.path.append("C:/Users/etlers/Documents/project/python/common")
 
@@ -9,24 +10,32 @@ import date_util as DU
 import conn_db as DB
 
 jongmok_list_csv_file = 'C:/Users/etlers/Documents/project/CSV/jongmok_list.csv'
+jongmok_yaml_file = './config/jongmok.yaml'
 
 qry_head = """
-INSERT INTO naver_news
-(JONGMOK_CD, JONGMOK_NM, POS_CNT, NEG_CNT, END_PRC, END_PRC_INC, HIGH_RT, HIGH_PRC, LOW_PRC, LOW_GAP, VOL)
+INSERT INTO naver_news_tmp
+(JONGMOK_CD, JONGMOK_NM, ARTICLE, POS_CNT, NEG_CNT, END_PRC, END_PRC_INC, HIGH_RT, HIGH_PRC, LOW_PRC, LOW_GAP, VOL)
 VALUES
+"""
+apply_qry = """
+INSERT INTO naver_news
+SELECT DISTINCT
+       *
+  FROM naver_news_tmp
 """
 
 list_url = []
+list_date = []
+# URL 리스트 생성
 def make_get_url():
     idx = DU.get_now_datetime().weekday()
-    list_date = []
     # 당일은 기본 포함
     list_date.append(DU.get_before_datetime(DU.get_now_datetime_string()).split(" ")[0])
-    # 월요일이면 토, 일
-    if idx == 1:
-        for day in range(2):
+    # 월요일이면 금, 토, 일
+    if idx == 0:
+        for day in range(3):
             list_date.append(DU.get_before_datetime(DU.get_now_datetime_string(), days=day+1).split(" ")[0])
-    # 토요일 이전이면 이전 요일만
+    # 나머지는 전일만
     else:
         list_date.append(DU.get_before_datetime(DU.get_now_datetime_string(), days=1).split(" ")[0])
     
@@ -34,22 +43,25 @@ def make_get_url():
         for page in range(10):
             list_url.append(f"https://finance.naver.com/news/news_list.nhn?mode=RANK&date={date}&page={page+1}")
 
+
+# 종목 딕셔너리
 def make_jongmok_dict():
-    dict_jongmok_nm = {}
-    df_jongmok = pd.read_csv(jongmok_list_csv_file, encoding="CP949")
-    # DataFrame에서 딕셔너리 생성
-    try:
-        df_jongmok = df_jongmok[["단축코드", "한글 종목약명"]]
-        for index, row in df_jongmok.iterrows():
-            dict_jongmok_nm["A" + row["단축코드"]] = row["한글 종목약명"]
-    except:
-        pass
+    # 환경변수 추출
+    with open(jongmok_yaml_file, encoding="utf-8-sig") as stream:
+        try:
+            dict_jongmok_nm = yaml.safe_load(stream)
+        except yaml.YAMLError as exc:
+            print(exc)
     
     return dict_jongmok_nm
 
 
+# 문자 분리
 def remove_char(in_str):
     result_str = in_str.split(">")[2].replace('</span',"").replace(",","")
+
+    if len(result_str.strip()) == 0:
+        return "0"
     
     return result_str
 
@@ -71,10 +83,10 @@ def get_prc_vol(cd):
     idx = 0
     for href in soup.find("table",{"class":"type2"}).find_all("td"):
         num_val = str(href).replace("\n","")
-        if ('<img alt' in num_val or '<td bgcolor' in num_val or '<td colspan="7" height="8"></td>' in num_val): continue
+        if ('<img' in num_val or '<td bgcolor' in num_val or '<td colspan="7" height="8"></td>' in num_val): continue
         if '>0</span></td>' in num_val: continue
         if '<td class="num">' not in num_val: continue
-        idx += 1
+        idx += 1        
         # 종가
         if idx % gap == 1:
             list_end_prc.append(int(remove_char(num_val)))
@@ -121,12 +133,13 @@ def get_prc_vol(cd):
 list_pos = [
     "부각","저평가","추천","매력","실적개선","러브콜","수익성개선","수익증대","실적지속","훨훨","강세","자금몰려","강력매수","계약체결","급등세","사업공급",
     "목표가↑","기대감↑","수혜","연속상한가","뚫었다","수주확대","단독공급","사용승인","사용허가","사업진출","특허취득","MOA체결","비중확대","호실적","회복",
-    "허가획득","최초","상수상","특허출원","매수몰려","특허취득","우선협상대상자","상승인"
+    "허가획득","최초","상수상","특허출원","매수몰려","특허취득","우선협상대상자","상승인","돌파","약진","본격화"
 ]
 list_neg = [
     "그랬을까","고평가","하락","보류","손실증가","부진","미끄럼","저하","우려","약세","?","와르르","하향","없어","약세","가능성확인","부담","악화",
-    "사유추가발생","정지"
+    "사유추가발생","정지","우려","꼴지"
 ]
+# 긍정, 부정 개수
 def get_pos_neg_cnt(row):
     pos_cnt = 0
     neg_cnt = 0
@@ -139,42 +152,82 @@ def get_pos_neg_cnt(row):
                 
     return pos_cnt, neg_cnt
 
-
+# 종목명 존재여부
 def match_full_name(row, nm):
     row = row.replace('"','').replace(","," ").replace("…"," ").replace("...", " ").replace("·"," ")
-    list_row = row.split(" ")
-    for val in list_row:
-        if nm == val:
+    list_word = row.split(" ")
+    for word in list_word:
+        if nm == word:
             return True
     return False
 
+
 list_result = []
-def get_news(base_url):
-    response = requests.get( base_url )
-    response
-    
-    soup = bs(response.text, 'html.parser')
+# 뉴스 추출해 결과 리스트 생성
+def make_result_list_by_news():
+    # 랭킹뉴스 가져오기
+    def get_rank_news(base_url):
+        response = requests.get( base_url )
+        response
+        
+        soup = bs(response.text, 'html.parser')
 
-    content = soup.select("div.hotNewsList")
-    list_content = str(content).split("\n")
+        content = soup.select("div.hotNewsList")
+        list_content = str(content).split("\n")
 
-    list_day_news = []
-    for str_content in list_content:
-        if "href" in str_content:
-            try:
-                head_line = str_content.split('title=')[1]
-            except:
-                head_line = str_content
+        list_day_news = []
+        for str_content in list_content:
+            if "href" in str_content:
+                try:
+                    head_line = str_content.split('title=')[1]
+                except:
+                    head_line = str_content
 
-            list_day_news.append(head_line[1:].replace("&quot;","").replace("</a>","").replace("&amp;","&").split('">')[0])
+                list_day_news.append(head_line[1:].replace("&quot;","").replace("</a>","").replace("&amp;","&").split('">')[0])
 
-    list_result.append(list(set(list_day_news)))
+        list_result.append(list(set(list_day_news)))
 
-def execute():
+
+    # 장중특징주
+    def get_special_news():
+        end_tf = False
+        for page in range(10):
+            if end_tf: break
+            response = requests.get( f"https://finance.naver.com/news/market_special.nhn?&page={page+1}" )
+            response
+
+            soup = bs(response.text, 'html.parser')
+
+            list_content = str(soup.findAll("table", {"summary": "장중특징주 리스트"})).split('\n')
+
+            list_special_news = []
+            for str_content in list_content:
+                if "title=" in str_content:
+                    headline = str_content.split('title=')[1]
+                    headline = headline[1:].replace("&quot;","").replace("</a>","").replace("&amp;","&")
+                    list_special_news.append(headline.split('">')[0])
+                elif "wdate" in str_content:
+                    wdate = str_content.split(">")[1].split(" ")[0]
+                    wdate = "20" + wdate.replace(".","-")
+                    if wdate < list_date[len(list_date)-1]:                
+                        end_tf = True
+                        break
+        list_result.append(list(set(list_special_news)))
+
+    # 뉴스 URL 생성
     make_get_url()
     for url in list_url:
-        get_news(url.replace("-",""))
+        # 전체 URL 생성
+        get_rank_news(url.replace("-",""))
+    # 장중 특징주
+    get_special_news()
 
+
+# 실행
+def execute():
+    # 뉴스 추출해 결과 리스트 생성
+    make_result_list_by_news()    
+    # 생성된 결과 리스트로 데이터 저장
     dict_jongmok_nm = make_jongmok_dict()
     list_whole = []
     for cd, nm in dict_jongmok_nm.items():
@@ -203,27 +256,49 @@ def execute():
                         list_whole.append(list_select)
 
     list_cols = ["종목코드", "종목명", "기사", "긍정", "부정", "종가", "종가연속증가", "종가비율", "고가", "저가", "85%", "거래량"]
-    df_news = pd.DataFrame(list_whole, columns=list_cols)
-    df_news = df_news.drop_duplicates()
-    df_news.to_csv("news.csv", index=False, encoding="utf-8-sig")
+    # df_news = pd.DataFrame(list_whole, columns=list_cols)
+    # df_news = df_news.drop_duplicates()
+    # df_news.to_csv("news.csv", index=False, encoding="utf-8-sig")
     # df_news = df_news[(df_news.긍정 > df_news.부정) & (df_news.종가 < 100000) & (df_news.거래량 > 500000)]
     # df_news = df_news.sort_values(by=["긍정"], ascending=False)
     
     qry_body = ""
-    for key, row in df_news.iterrows():
-        qry_body += "('" + row["종목코드"] + "','" + row["종목명"] + "'," + str(row["긍정"]) + "," + str(row["부정"]) + "," + str(row["종가"]) \
-                         + "," + str(row["종가연속증가"]) + "," + str(row["종가비율"]) + "," + str(row["고가"]) + "," + str(row["저가"]) \
-                         + "," + str(row["85%"]) + "," + str(row["거래량"]) + ")," + "\n"
+    # for key, row in df_news.iterrows():
+    #     qry_body += "('" + row["종목코드"] + "','" + row["종목명"] + "'," + str(row["긍정"]) + "," + str(row["부정"]) + "," + str(row["종가"]) \
+    #                      + "," + str(row["종가연속증가"]) + "," + str(row["종가비율"]) + "," + str(row["고가"]) + "," + str(row["저가"]) \
+    #                      + "," + str(row["85%"]) + "," + str(row["거래량"]) + ")," + "\n"
+    for list_row in list_whole:
+        qry_row = "("
+        for idx in range(len(list_row)):
+            if idx < 2:
+                qry_row += "'" + list_row[idx] + "',"
+            elif idx == 2:
+                qry_row += "'" + list_row[idx].replace("'","''") + "',"
+            else:
+                qry_row += str(list_row[idx]) + ","
+        qry_body += qry_row[:len(qry_row)-2] + ")," + "\n"
+        # print(qry_row)
+        qry_row = ""
     
     # 데이터 초기화
     qry = "TRUNCATE TABLE naver_news"
     DB.transaction_data(qry)
+    qry = "TRUNCATE TABLE naver_news_tmp"
+    DB.transaction_data(qry)
     # 저장 쿼리 생성
     ins_qry = qry_head + qry_body
     ins_qry = ins_qry[:len(ins_qry)-2]
-    # 디비로 저장
+    # 임시 디비로 저장
     try:
         DB.transaction_data(ins_qry)
+    except Exception as e:
+        print("Insert Naver News Data Exception:", e)
+        print("#"*100)
+        print(ins_qry)
+        print("#"*100)
+    # 실제 디비로 저장
+    try:
+        DB.transaction_data(apply_qry)
     except Exception as e:
         print("Insert Naver News Data Exception:", e)
         print("#"*100)
@@ -232,4 +307,14 @@ def execute():
 
 
 if __name__ == "__main__":
+    while True:
+        now_tm = DU.get_now_datetime_string().split(" ")[1]
+        # 9시 전가지는 시작 대기
+        if now_tm.replace(":","") < "085900":
+            print("시작대기: ", DU.get_now_datetime_string())
+            time.sleep(1)
+            continue
+        else:
+            break
+
     execute()

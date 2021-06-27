@@ -2,6 +2,7 @@ import requests
 from bs4 import BeautifulSoup as bs
 import time, sys, yaml
 import win32com.client
+import save_rank_news as NEWS
 
 sys.path.append("C:/Users/etlers/Documents/project/python/common")
 
@@ -91,18 +92,27 @@ INSERT INTO naver_condition
 VALUES
 """
 extract_qry = """
-SELECT DISTINCT
-       JONGMOK_CD
-     , JONGMOK_NM
-     , END_PRC
+WITH T2 AS (
+SELECT JONGMOK_CD
+     , SUM(POS_CNT) - SUM(NEG_CNT) AS GAP_CNT
+     , COUNT(*) AS IN_CNT
   FROM naver_news
- WHERE 1 = 1
-   AND NEG_CNT = 0
-   AND POS_CNT > NEG_CNT
-   AND HIGH_RT < 95
-   AND VOL > 500000
-   AND END_PRC < 100000
- ORDER BY POS_CNT DESC, VOL DESC
+ GROUP BY JONGMOK_CD
+)
+SELECT DISTINCT
+       T1.JONGMOK_CD
+     , T1.JONGMOK_NM
+     , T1.END_PRC
+     , T2.GAP_CNT, T2.IN_CNT
+  FROM naver_news T1
+ INNER JOIN T2
+    ON T2.JONGMOK_CD = T1.JONGMOK_CD
+   AND T2.GAP_CNT > 0
+ WHERE 1 = 1   
+   AND T1.NEG_CNT = 0
+   AND T1.HIGH_RT < 97.1
+   AND T1.END_PRC BETWEEN 3500 AND 100000
+ ORDER BY T2.GAP_CNT DESC, T1.HIGH_RT, T1.END_PRC, T1.VOL DESC
  LIMIT 3
 """
 
@@ -125,9 +135,6 @@ class Cp6033:
         self.objRq.SetInputValue(0, acc)  # 계좌번호
         self.objRq.SetInputValue(1, accFlag[0])  # 상품구분 - 주식 상품 중 첫번째
         self.objRq.SetInputValue(2, 50)  #  요청 건수(최대 50)
-
-        # 뉴스 속보
-        # self.list_quick_news = NEWS.get_quick_news()
  
     # 실제적인 6033 통신 처리
     def rq6033(self, retcode):
@@ -165,12 +172,7 @@ class Cp6033:
                 ###################################################################################
                 prc = int(buyPrice)
                 # 매도이익 설정을 위한 저장. 기본 2.5% 수익률 지정
-                prc = int(int(prc * 1.025) / 10) * 10
-                # for headline in self.list_quick_news:
-                #     # 뉴스에 있다면 3.5%
-                #     if name in headline:
-                #         prc = int(int(prc * 1.035) / 10) * 10
-                #         break
+                prc = int(int(prc * 1.03) / 10) * 10
                 # 딕셔너리에 저장
                 dict_sell_info[code] = [int(amount), prc]
                 ###################################################################################
@@ -191,15 +193,15 @@ class Cp6033:
         return True
 
 
-# 랭킹에 따른 포인트
-def calc_rank_point(rnk):
-    if rnk < 4: points = 10
-    elif rnk < 10: points = 7
-    elif rnk < 21: points = 5
-    elif rnk < 31: points = 3
-    else: points = 1
-    
-    return points
+# 대기. 지정한 시간만큼 대기
+def waiting_seconds(sec, msg):
+    idx = 0
+    while True:
+        idx += 1
+        if idx > sec: break
+        print(DU.get_now_datetime_string(), msg)
+        time.sleep(1)
+
 
 # 데이터 타입에 맞게 재생성
 def remake_list(list_base, num_cols, rate_cols):    
@@ -217,161 +219,6 @@ def remake_list(list_base, num_cols, rate_cols):
         list_base[rate_cols[idx]] = num
         
     return list_base    
-
-# 급등 데이터 추출
-def get_sudden_rising_data(base_url):
-    list_whole = []
-
-    response = requests.get( base_url )
-    soup = bs(response.text, 'html.parser')    
-
-    content = soup.select("div.box_type_l")
-    list_content = str(content).split("\n")
-    list_jongmok = []
-    for row_data in list_content:
-        row = row_data.strip().replace("\t","")
-        if '<td class="no">' in row:
-            if len(list_jongmok) > 0:
-                list_whole.append(list_jongmok)
-                list_jongmok = []
-        elif "tltle" in row:
-            jongmok_cd = row.split("code=")[1].split('"')[0]
-            jongmok_nm = row.split("code=")[1].split('"')[1].split('</a')[0].replace(">","")
-            list_jongmok.append("A" + jongmok_cd)
-            list_jongmok.append(jongmok_nm)
-        elif row[:1] != "<":
-            list_jongmok.append(row)
-        elif ("<td" not in row or row[:4] == "<tr>"):
-            continue
-        else:
-            num_val = row.replace('<td class="number">','')
-            if len(num_val) == 0:
-                continue
-            list_jongmok.append(num_val.replace("</td>",""))
-
-    return list_whole
-
-# 급등 데이터 생성
-def get_sudden_rising():
-
-    def make_qry_n_save_data(list_result, list_data_value):     
-        body = ""
-        rnk = 0
-        for list_row in list_result:
-            row = "( "
-            rnk += 1
-            for idx in range(len(list_row)):
-                if idx in list_data_value:
-                    try:
-                        row += "'" + list_row[idx] + "', "
-                    except:
-                        row += str(list_row[idx]) + ", "
-            # 포인트 계산
-            points = calc_rank_point(rnk)
-            row += str(rnk) + ", " + str(points) + ")," + "\n"
-            row = row.replace(", )", ")")
-            body += row
-        # 저장 쿼리 생성
-        ins_qry = qry_head + body
-        ins_qry = ins_qry[:len(ins_qry)-2]
-        # 디비로 저장
-        try:
-            DB.transaction_data(ins_qry)
-        except Exception as e:
-            print("Insert Naver Data Exception:", e)
-            print("#"*100)
-            print(ins_qry)
-            print("#"*100)
-
-    def save_low_up_data():
-        num_cols = [3,4,6,7,8,9]
-        rate_cols = [0,5,10,11]
-        # 등록일시
-        ins_dtm = DU.get_now_datetime_string()
-        # 코스닥, 코스피 데이터 생성
-        for url in list_low_up_url:
-            list_whole = get_sudden_rising_data(url)
-            
-            list_result = []
-            for list_row in list_whole:
-                if len(list_row) == 12:
-                    list_result.append(remake_list(list_row, num_cols, rate_cols))
-            list_data_value = [1, 2, 3, 5, 9]
-                    
-            make_qry_n_save_data(list_result, list_data_value)
-
-    def save_quant_high_data():
-        num_cols = [3,4,6,7,8,9]
-        rate_cols = [0,5,10]
-        # 등록일시
-        ins_dtm = DU.get_now_datetime_string()
-        # 코스닥, 코스피 데이터 생성
-        for url in list_quant_high_url:
-            list_whole = get_sudden_rising_data(url)
-            
-            list_result = []
-            for list_row in list_whole:
-                if len(list_row) == 11:
-                    list_result.append(remake_list(list_row, num_cols, rate_cols))
-            list_data_value = [1, 2, 3, 5, 8]
-                    
-            make_qry_n_save_data(list_result, list_data_value)
-
-    def save_sise_rising():
-        num_cols = [2,3,5,6,7,8,9]
-        rate_cols = [4,10,11]
-        # 등록일시
-        ins_dtm = DU.get_now_datetime_string()
-        # 코스닥, 코스피 데이터 생성
-        for url in list_sise_url:
-            list_whole = get_sudden_rising_data(url)
-            
-            list_result = []
-            for list_row in list_whole:
-                if len(list_row) == 12:
-                    list_result.append(remake_list(list_row, num_cols, rate_cols))
-            list_data_value = [0, 1, 2, 4, 5]
-                    
-            make_qry_n_save_data(list_result, list_data_value)
-
-    # 저가대비 급등
-    save_low_up_data()
-    # # 거래량 급증
-    save_quant_high_data()
-    # # 시세 급등
-    save_sise_rising()
-
-def get_condition_data(base_url):
-    list_whole = []
-
-    response = requests.get( base_url )
-    soup = bs(response.text, 'html.parser')    
-
-    content = soup.select("div.box_type_l")
-    list_content = str(content).split("\n")
-    list_jongmok = []
-    for row_data in list_content:
-        row = row_data.strip().replace("\t","")
-        if '<td class="no">' in row:
-            if len(list_jongmok) > 0:
-                list_whole.append(list_jongmok)
-                list_jongmok = []
-        elif "tltle" in row:
-            jongmok_cd = row.split("code=")[1].split('"')[0]
-            jongmok_nm = row.split("code=")[1].split('"')[1].split('</a')[0].replace(">","")
-            list_jongmok.append("A" + jongmok_cd)
-            list_jongmok.append(jongmok_nm)
-        elif row[:1] != "<":
-            list_jongmok.append(row)
-        elif ("<td" not in row or row[:4] == "<tr>"):
-            continue
-        else:
-            num_val = row.replace('<td class="number">','')
-            if len(num_val) == 0:
-                continue
-            list_jongmok.append(num_val.replace("</td>",""))
-
-    return list_whole
 
 
 # 구매한 금액, 수량
@@ -444,12 +291,13 @@ def order_buy(jongmok_cd, jongmok_nm, now_price):
     if buy_ea > 100:
         buy_ea = 100
     # 시장가 매수
-    if order_stock(jongmok_cd, "2", buy_ea, 0, "03", jongmok_nm):
-        return True
-    else:
-        return False
+    try:
+        order_stock(jongmok_cd, "2", buy_ea, 0, "03", jongmok_nm)
+    except Exception as e:
+        print("Order Exception:", jongmok_cd, e)
 
 
+# 로직 시작
 def execute():
     list_order = DB.query_data(extract_qry)
     # 없으면 종료
@@ -484,6 +332,7 @@ def execute():
     return True
     
 
+# 프로그램 시작
 if __name__ == "__main__":
 
     while True:
@@ -496,8 +345,15 @@ if __name__ == "__main__":
         else:
             break
 
-    buy_tf = execute()
-    if buy_tf == False:
-        print("매수를 위한 조건에 맞는 데이터가 없었음")
-    
+    while True:
+        # 뉴스 생성
+        NEWS.execute()
+        # 로직 시작. 매수, 매도 잘 했으면 종료
+        if execute():
+            break
+        # 메세지 찍고 대기 후 다시 뉴스 생성부터 시작
+        else:
+            print("매수를 위한 조건에 맞는 데이터가 없었음")
+            waiting_seconds(60, "재매수를 위한 대기")
+        
     txt_file.close()
