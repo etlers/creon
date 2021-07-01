@@ -25,25 +25,6 @@ SELECT DISTINCT
   FROM naver_news_tmp
 """
 
-list_url = []
-list_date = []
-# URL 리스트 생성
-def make_get_url():
-    idx = DU.get_now_datetime().weekday()
-    # 당일은 기본 포함
-    list_date.append(DU.get_before_datetime(DU.get_now_datetime_string()).split(" ")[0])
-    # 월요일이면 금, 토, 일
-    if idx == 0:
-        for day in range(3):
-            list_date.append(DU.get_before_datetime(DU.get_now_datetime_string(), days=day+1).split(" ")[0])
-    # 나머지는 전일만
-    else:
-        list_date.append(DU.get_before_datetime(DU.get_now_datetime_string(), days=1).split(" ")[0])
-    print(list_date)
-    for date in list_date:
-        for page in range(10):
-            list_url.append(f"https://finance.naver.com/news/news_list.nhn?mode=RANK&date={date}&page={page+1}")
-
 
 # 종목 딕셔너리
 def make_jongmok_dict():
@@ -118,7 +99,7 @@ def get_prc_vol(cd):
     max_inc_cnt = 0
     try:
         for idx in range(9, 1, -1):
-            if list_end_prc[idx] > list_end_prc[idx-1]:
+            if list_end_prc[idx-1] > list_end_prc[idx]:
                 inc_cnt += 1
             else:
                 if inc_cnt > max_inc_cnt:
@@ -127,7 +108,9 @@ def get_prc_vol(cd):
     except:
         pass
 
-    max_inc_cnt
+    if inc_cnt > max_inc_cnt:
+        max_inc_cnt = inc_cnt
+
     return end_prc_high, high_prc, low_prc, int(vol / 10), max_inc_cnt
 
 
@@ -135,7 +118,7 @@ list_pos = [
     "부각","저평가","추천","매력","실적개선","러브콜","수익성개선","수익증대","실적지속","훨훨","강세","자금몰려","강력매수","계약체결","급등세","사업공급",
     "목표가↑","기대감↑","수혜","연속상한가","뚫었다","수주확대","단독공급","사용승인","사용허가","사업진출","특허취득","MOA체결","비중확대","호실적","회복",
     "허가획득","최초","상수상","특허출원","매수몰려","특허취득","우선협상대상자","상승인","돌파","약진","본격화","흑자전환","성장중","사자","공급계약","상향",
-    "고성장","순매수"
+    "고성장","순매수","승소"
 ]
 list_neg = [
     "그랬을까","고평가","하락","보류","손실증가","부진","미끄럼","저하","우려","약세","?","와르르","하향","없어","약세","가능성확인","부담","악화",
@@ -168,6 +151,25 @@ def match_full_name(row, nm):
 list_result = []
 # 뉴스 추출해 결과 리스트 생성
 def make_result_list_by_news():
+    list_url = []
+    list_date = []
+    # URL 리스트 생성
+    def make_get_url():
+        idx = DU.get_now_datetime().weekday()
+        # 당일은 기본 포함
+        list_date.append(DU.get_before_datetime(DU.get_now_datetime_string()).split(" ")[0])
+        # 월요일이면 금, 토, 일
+        if idx == 0:
+            for day in range(3):
+                list_date.append(DU.get_before_datetime(DU.get_now_datetime_string(), days=day+1).split(" ")[0])
+        # 나머지는 전일만
+        else:
+            list_date.append(DU.get_before_datetime(DU.get_now_datetime_string(), days=1).split(" ")[0])
+        print(list_date)
+        for date in list_date:
+            for page in range(10):
+                list_url.append(f"https://finance.naver.com/news/news_list.nhn?mode=RANK&date={date}&page={page+1}")
+                
     # 랭킹뉴스 가져오기
     def get_rank_news(base_url):
         response = requests.get( base_url )
@@ -220,23 +222,6 @@ def make_result_list_by_news():
     # 리서치 보고서
     def get_research():
 
-        def get_detail_div(base_url, nm):
-            response = requests.get( base_url, headers={"User-agent": "Mozilla/5.0"} )
-            soup = bs(response.text, 'html.parser')
-            desc = ""
-
-            print(nm)
-            for row in soup.find("table",{"summary":"종목분석 리포트 본문내용"}).find_all("div"):
-                line = str(row)
-                if 'div style' not in line: continue
-                try:
-                    desc += line.split("<b>")[1]
-                except:
-                    print(line)
-            print(desc)
-
-            return desc
-
         def get_detail(base_url, nm):
             response = requests.get( base_url, headers={"User-agent": "Mozilla/5.0"} )
             soup = bs(response.text, 'html.parser')
@@ -282,8 +267,7 @@ def make_result_list_by_news():
             desc = list_detail[1] + " " + list_detail[3] + " " + desc.replace("\xa0","").replace("\n"," ")
             list_line.append(desc.replace('amp;','').replace("..",""))
             list_result.append(list_line)
-            list_line = []        
-
+            list_line = []
 
     # 뉴스 URL 생성
     make_get_url()
@@ -302,7 +286,7 @@ def make_result_list_by_news():
 # 실행
 def execute():
     # 뉴스 추출해 결과 리스트 생성
-    make_result_list_by_news()    
+    make_result_list_by_news()
     # 생성된 결과 리스트로 데이터 저장
     dict_jongmok_nm = make_jongmok_dict()
     list_whole = []
@@ -387,7 +371,7 @@ def execute():
 if __name__ == "__main__":
     while True:
         now_tm = DU.get_now_datetime_string().split(" ")[1]
-        # 9시 전가지는 시작 대기
+        # 지정시간 전까지는 시작 대기
         if now_tm.replace(":","") < "085900":
             print("시작대기: ", DU.get_now_datetime_string())
             time.sleep(1)

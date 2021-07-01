@@ -1,0 +1,19 @@
+query_param:
+  high_rt: 97.5
+  gap_cnt: 1
+  up_cnt: 7
+  from_price: 5000
+  to_price: 150000
+  vol: 10000
+  limit: 5
+
+hms_param:
+  start_hms: "090000"
+  buy_hms: "090000"
+  sise_hms: "091005"
+  until_hms: "100000"
+  clear_hms: "103000"
+
+base_amount: 1000000
+max_buy_cnt: 50
+profit_rt: 1.027

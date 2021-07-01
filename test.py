@@ -1,6 +1,5 @@
-import os, sys, yaml
-import quick_news as NEWS
+import no_contract
 
-prc = 7363
-print(int(int(prc * 1.030) / 10) * 10)
-print(int(int(prc * 1.045) / 10) * 10)
+list_except_code = no_contract.Reqeust5339()
+
+print(list_except_code)
