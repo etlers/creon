@@ -10,6 +10,7 @@ import save_rank_news
 import save_time_sise
 import jango
 import no_contract
+import get_realtime_info
 
 sys.path.append("C:/Users/etlers/Documents/project/python/common")
 
@@ -70,6 +71,74 @@ def waiting_seconds(sec, msg):
         print(DU.get_now_datetime_string(), msg)
         time.sleep(1)
 
+
+# 최종 잔고내역 슬랙으로 전송
+def send_message():
+    # 잔고 요청
+    list_jango = get_jango()
+    # 메세지 생성
+    msg = ""
+    try:
+        for list_jongmok in list_jango:
+            msg += list_jongmok[0] + " " + list_jongmok[1] + "]  " + format(list_jongmok[2], ",") + "  " + format(list_jongmok[3], ",") + "\n"
+    except Exception as e:
+        print("Send Slack Message Exception:", e)
+    
+    SSM.send_message_to_slack(msg)
+
+
+# 단가에 따른 절사 처리를 위한 나머지, 갭 생성
+def calc_nam_gap(prc):    
+    if prc < 10000:
+        nam = prc % 50
+        gap = 1
+    elif prc < 50000:
+        nam = prc % 100
+        gap = 2
+    elif prc < 100000:
+        nam = prc % 500
+        gap = 10
+    else:
+        nam = prc % 1000
+        gap = 20
+    
+    return nam, gap
+
+
+# 최종 절사금액 생성
+def make_cut_prc(prc, nam, gap):
+    base = 50 * gap
+    if nam < base:
+        prc = int(prc) - nam
+    else:
+        prc = int(prc) + base - nam    
+    
+    return prc    
+
+
+# 단가에 따른 절사 계산
+def  calc_sell_prc(in_prc, cd="", div=2):
+    # 수익 설정
+    prc = int(in_prc * profit_rt)    
+    # 계산을 위한 인자 및 금액 계산
+    nam, gap = calc_nam_gap(prc)
+    order_prc = make_cut_prc(prc, nam, gap)
+    
+    # 장 시작 매도 시에는 전일 종가와 매도 계산한 단가가 별 차이가 없으면 단가를 0.5% 올린다.
+    if div == 1:
+        try:
+            list_realtime_info = get_realtime_info.execute(cd)
+            end_prc = list_realtime_info[0]
+            # 차이가 1% 미만이면 0.5% 추가
+            if round(((order_prc - end_prc) / end_prc) * 100, 2) < 1.0:
+                order_prc = int(order_prc * 1.005)
+                nam, gap = calc_nam_gap(order_prc)
+                order_prc = make_cut_prc(order_prc, nam, gap)
+        except:
+            pass
+
+    return order_prc
+    
 
 # 매수, 매도
 def order_stock(jongmok_cd, div, qty, prc, ho_div, jongmok_nm=""):
@@ -140,47 +209,6 @@ def get_jango():
     return list_jango
 
 
-# 최종 잔고내역 슬랙으로 전송
-def send_message():
-    # 잔고 요청
-    list_jango = get_jango()
-    # 메세지 생성
-    msg = ""
-    try:
-        for list_jongmok in list_jango:
-            msg += list_jongmok[0] + " " + list_jongmok[1] + "]  " + format(list_jongmok[2], ",") + "  " + format(list_jongmok[3], ",") + "\n"
-    except Exception as e:
-        print("Send Slack Message Exception:", e)
-    
-    SSM.send_message_to_slack(msg)
-
-
-# 단가에 따른 절사 계산
-def  calc_sell_prc(in_prc):
-    # 수익 설정
-    prc = int(in_prc * profit_rt)
-    base = 50
-    # 단가에 따른 절사 처리
-    if prc < 10000:
-        nam = prc % 50
-        gap = 1
-    elif prc < 50000:
-        nam = prc % 100
-        gap = 2
-    elif prc < 100000:
-        nam = prc % 500
-        gap = 10
-    else:
-        nam = prc % 1000
-        gap = 20
-    # 최종 절사금액 생성
-    base = base * gap
-    if nam < base:
-        return int(prc) - nam
-    else:
-        return int(prc) + base - nam
-
-
 # 로직 시작
 def execute():    
     # 미체결 목록
@@ -248,6 +276,7 @@ def execute():
 
 # 프로그램 시작
 if __name__ == "__main__":
+
     # 시작 대기
     while True:
         now_tm = DU.get_now_datetime_string().split(" ")[1]
@@ -258,28 +287,30 @@ if __name__ == "__main__":
             continue
         else:
             break
-    # 잔고 리스트 생성
-    list_jango = get_jango()
-    for list_jongmok in list_jango:
-        # 장 시작과 동시에 전일까지 보유하고 있는 주식의 매도
-        try:
-            qty = list_jongmok[2]
-            prc = list_jongmok[3]
-            prc = calc_sell_prc(prc)
-            order_stock(list_jongmok[0], "1", qty, prc, "01")
-            time.sleep(0.5)
-        except Exception as e:
-            print("Sell Order Exception:", e)
+    # 최초 수행 시에만 잔고 리스트 생성
+    now_tm = DU.get_now_datetime_string().split(" ")[1]
+    if now_tm < "090100":
+        list_jango = get_jango()
+        for list_jongmok in list_jango:
+            # 장 시작과 동시에 전일까지 보유하고 있는 주식의 매도
+            try:
+                qty = list_jongmok[2]
+                prc = list_jongmok[3]
+                prc = calc_sell_prc(prc, 1)
+                order_stock(list_jongmok[0], "1", qty, prc, "01")
+                time.sleep(0.5)
+            except Exception as e:
+                print("Sell Order Exception:", e)
     # 뉴스 생성 및 매수 & 매도
     while True:
-        # 뉴스 생성
-        save_rank_news.execute()
         # 시세 생성
         now_tm = DU.get_now_datetime_string().split(" ")[1]
         if now_tm.replace(":","") < sise_hms:
-            print("시세생성 시작대기: ", DU.get_now_datetime_string())
+            print("뉴스 및 시세생성 시작대기: ", DU.get_now_datetime_string())
             time.sleep(0.5)
             continue
+        # 뉴스 생성
+        save_rank_news.execute()
         # 생성된 뉴스에 해당하는 분단위 시세정보 생성
         save_time_sise.execute()
         # 뉴스 생성 후 매수 & 매도 대기

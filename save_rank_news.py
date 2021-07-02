@@ -117,12 +117,12 @@ def get_prc_vol(cd):
 list_pos = [
     "부각","저평가","추천","매력","실적개선","러브콜","수익성개선","수익증대","실적지속","훨훨","강세","자금몰려","강력매수","계약체결","급등세","사업공급",
     "목표가↑","기대감↑","수혜","연속상한가","뚫었다","수주확대","단독공급","사용승인","사용허가","사업진출","특허취득","MOA체결","비중확대","호실적","회복",
-    "허가획득","최초","상수상","특허출원","매수몰려","특허취득","우선협상대상자","상승인","돌파","약진","본격화","흑자전환","성장중","사자","공급계약","상향",
-    "고성장","순매수","승소"
+    "허가획득","최초","상수상","특허출원","매수몰려","특허취득","우선협상대상자","가치상승","돌파","약진","본격화","흑자전환","성장중","사자","공급계약","상향",
+    "고성장","순매수","승소","유일대안","독점권리","역대급실적"
 ]
 list_neg = [
     "그랬을까","고평가","하락","보류","손실증가","부진","미끄럼","저하","우려","약세","?","와르르","하향","없어","약세","가능성확인","부담","악화",
-    "사유추가발생","정지","우려","꼴지","마이너스","팔자","요구","순매도","정지"
+    "사유추가발생","정지","우려","꼴지","마이너스","팔자","요구","순매도","정지","급락",
 ]
 # 긍정, 부정 개수
 def get_pos_neg_cnt(row):
@@ -146,6 +146,23 @@ def match_full_name(row, nm):
         if nm == word:
             return True
     return False
+
+
+def make_page_num(base_url):
+        list_pg = []        
+        response = requests.get( base_url, headers={"User-agent": "Mozilla/5.0"} )
+        soup = bs(response.text, 'html.parser')
+
+        list_pgnum = str(soup.find("table",{"summary":"페이지 네비게이션 리스트"})).split("\n")
+        for num in list_pgnum:
+            if "href" in num:
+                try:
+                    pg = int(num.split(">")[1].split("<")[0])
+                except:
+                    continue
+                list_pg.append(pg)
+
+        return list_pg
 
 
 list_result = []
@@ -196,9 +213,11 @@ def make_result_list_by_news():
     # 장중특징주
     def get_special_news():
         end_tf = False
-        for page in range(10):
+        url = "https://finance.naver.com/news/market_special.nhn"
+        list_pg = make_page_num(url)
+        for page in list_pg:
             if end_tf: break
-            response = requests.get( f"https://finance.naver.com/news/market_special.nhn?&page={page+1}" )
+            response = requests.get( f"https://finance.naver.com/news/market_special.nhn?&page={page}" )
             response
 
             soup = bs(response.text, 'html.parser')
@@ -236,9 +255,7 @@ def make_result_list_by_news():
         base_url = f"https://finance.naver.com/research/company_list.nhn"
         response = requests.get( base_url, headers={"User-agent": "Mozilla/5.0"} )
         soup = bs(response.text, 'html.parser')
-        idx = 0
 
-        list_cols = ["JONGMOK_CD", "JONGMOK_NM", "HREF", "TITLE"]
         list_headline = []
         list_line = []
         for row in soup.find("table",{"summary":"종목분석 리포트 게시판 글목록"}).find_all("td"):
@@ -269,6 +286,46 @@ def make_result_list_by_news():
             list_result.append(list_line)
             list_line = []
 
+    # 기업, 종목 분석
+    def make_analysis_jongmok():
+
+        def get_detail(base_url):
+            response = requests.get( base_url, headers={"User-agent": "Mozilla/5.0"} )
+            soup = bs(response.text, 'html.parser')
+
+            idx = 0
+            list_content = str(soup.find("div", {"class":"articleCont"})).split("\n")
+            for contents in list_content:
+                content = contents.strip()
+                idx += 1
+                if idx != 2: continue
+                desc = content.split("</span>")[1].replace("<br/>"," ").replace("<br>"," ").replace("</br>"," ").split("<span")[0]
+                if "</h3>" in desc: continue
+                desc = desc.split("<div")[0].split("<!--")[0].replace('"',"'")
+                if len(desc) < 20: continue
+                list_result.append(list(set(desc.strip())))        
+
+        list_dt = ["20210702", "20210701"]
+        
+        for dt in list_dt:
+            url = f"https://finance.naver.com/news/news_list.nhn?mode=LSS3D&section_id=101&section_id2=258&section_id3=402&date={dt}"
+            list_pg = make_page_num(url)
+            for page in list_pg:
+                base_url = f"https://finance.naver.com/news/news_list.nhn?mode=LSS3D&section_id=101&section_id2=258&section_id3=402&date={dt}&page={page}"
+                response = requests.get( base_url, headers={"User-agent": "Mozilla/5.0"} )
+                soup = bs(response.text, 'html.parser')
+                idx = 0
+
+                idx = 0
+                list_hedline = str(soup.find("div",id="contentarea_left")).split("\n")
+                for row in list_hedline:
+                    headline = row.strip()
+                    if ("href" in headline and "title" in headline):
+                        href_title = headline.split("<a href=")[1]
+                        href = "https://finance.naver.com" + href_title.split("title=")[0].replace("amp;","").replace('"','').replace("§ion","&section")
+                        title = href_title.split("title=")[1].replace("</a>","").split('">')[0].replace('"',' ').strip().replace("</span>","")
+                        get_detail(href)
+
     # 뉴스 URL 생성
     make_get_url()
     for url in list_url:
@@ -281,6 +338,9 @@ def make_result_list_by_news():
     # 리서치 보고서
     get_research()
     print(DU.get_now_datetime_string(), "리서치 보고서 생성 완료!!")
+    # 기업, 종목 분석
+    make_analysis_jongmok()
+    print(DU.get_now_datetime_string(), "기업 & 종목 분석정보 생성 완료!!")
 
 
 # 실행
@@ -293,6 +353,7 @@ def execute():
     for cd, nm in dict_jongmok_nm.items():
         for list_row in list_result:
             for headline in list_row:
+                if nm.strip() == headline.strip(): continue                    
                 if nm in headline:
                     if match_full_name(headline, nm):
                         list_select = []
@@ -316,17 +377,8 @@ def execute():
                         list_whole.append(list_select)
 
     list_cols = ["종목코드", "종목명", "기사", "긍정", "부정", "종가", "종가연속증가", "종가비율", "고가", "저가", "85%", "거래량"]
-    # df_news = pd.DataFrame(list_whole, columns=list_cols)
-    # df_news = df_news.drop_duplicates()
-    # df_news.to_csv("news.csv", index=False, encoding="utf-8-sig")
-    # df_news = df_news[(df_news.긍정 > df_news.부정) & (df_news.종가 < 100000) & (df_news.거래량 > 500000)]
-    # df_news = df_news.sort_values(by=["긍정"], ascending=False)
     
     qry_body = ""
-    # for key, row in df_news.iterrows():
-    #     qry_body += "('" + row["종목코드"] + "','" + row["종목명"] + "'," + str(row["긍정"]) + "," + str(row["부정"]) + "," + str(row["종가"]) \
-    #                      + "," + str(row["종가연속증가"]) + "," + str(row["종가비율"]) + "," + str(row["고가"]) + "," + str(row["저가"]) \
-    #                      + "," + str(row["85%"]) + "," + str(row["거래량"]) + ")," + "\n"
     for list_row in list_whole:
         qry_row = "("
         for idx in range(len(list_row)):
