@@ -81,7 +81,7 @@ class Creon:
 def execute():
     creon_process = Creon()
     # id, pwd, pwdcert
-    creon_process.connect("ETLERS","Wndyd@80","wndyd@605801")
+    creon_process.connect("","","")
     
 
 if __name__ == "__main__":
